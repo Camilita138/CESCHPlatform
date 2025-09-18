@@ -1,58 +1,62 @@
-# autenticacion.py
 import os
-import sys
-from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 
-# Permisos necesarios para Drive y Sheets
 SCOPES = [
+    "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
 ]
 
-def resource_path(relative_path):
-    """Obtiene la ruta absoluta, incluso dentro del .exe empaquetado."""
-    base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
-    return os.path.join(base_path, relative_path)
+CREDENTIALS_PATH = os.path.join(os.getcwd(), "credentials.json")
+TOKEN_PATH       = os.path.join(os.getcwd(), "token.json")
 
-def authenticate():
+def authenticate() -> Credentials:
+    """
+    Devuelve credenciales válidas. Si el refresh_token está revocado/expirado,
+    elimina token.json y levanta nuevamente el flujo de autorización.
+    """
     creds = None
-    token_path = resource_path("token.json")
-    credentials_path = resource_path("credentials.json")  # archivo de Google OAuth
 
-    # Si ya existe un token de sesión previa, lo cargamos
-    if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    # 1) Cargar token si existe
+    if os.path.exists(TOKEN_PATH):
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+        except Exception:
+            creds = None
 
-    # Si no hay credenciales válidas, iniciar login
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    # 2) Intentar refrescar si está expirado
+    if creds and creds.expired and creds.refresh_token:
+        try:
             creds.refresh(Request())
-        else:
-            if not os.path.exists(credentials_path):
-                print(f"ERROR: No se encontró {credentials_path}")
-                return None
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Guardar credenciales para próximas ejecuciones
-        with open(token_path, "w") as token:
-            token.write(creds.to_json())
+        except RefreshError:
+            # refresh_token inválido → rehacer login
+            try:
+                os.remove(TOKEN_PATH)
+            except Exception:
+                pass
+            creds = None
+
+    # 3) Si no hay credenciales válidas, abrir login local
+    if not creds or not creds.valid:
+        if not os.path.exists(CREDENTIALS_PATH):
+            raise FileNotFoundError(
+                "No se encontró credentials.json. Descárgalo desde Google Cloud Console."
+            )
+        flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
+        creds = flow.run_local_server(port=0)
+        with open(TOKEN_PATH, "w", encoding="utf-8") as f:
+            f.write(creds.to_json())
 
     print("Autenticación exitosa con Google API.")
     return creds
 
-def get_service(service_name: str):
-    """Obtiene un servicio de Google API autenticado"""
-    
+def get_service(api: str):
     creds = authenticate()
-    if not creds:
-        raise Exception("No se pudo autenticar con Google API")
-    
-    if service_name == 'sheets':
-        return build('sheets', 'v4', credentials=creds)
-    elif service_name == 'drive':
-        return build('drive', 'v3', credentials=creds)
-    else:
-        raise ValueError(f"Servicio no soportado: {service_name}")
+    if api == "drive":
+        return build("drive", "v3", credentials=creds)
+    if api == "sheets":
+        return build("sheets", "v4", credentials=creds)
+    raise ValueError(f"API no soportada: {api}")
