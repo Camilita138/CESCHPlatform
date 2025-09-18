@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Upload, FileText, AlertCircle, CheckCircle, Clock, FileImage, Sheet, Brain, ExternalLink } from "lucide-react"
+import { Upload, FileText, AlertCircle, CheckCircle, Clock, FileImage, Brain, Sheet, ExternalLink } from "lucide-react"
 
 interface LiquidacionCompletaProps {
   onComplete?: (results: any) => void
@@ -41,6 +41,8 @@ export function LiquidacionCompleta({ onComplete }: LiquidacionCompletaProps) {
   const [error, setError] = useState("")
   const [progress, setProgress] = useState(0)
   const [currentStep, setCurrentStep] = useState(0)
+
+  // Mantengo compatibilidad por si tu backend todavía devuelve sheetUrl (flujo viejo)
   const [results, setResults] = useState<{
     totalImages: number
     sheetUrl: string
@@ -48,12 +50,11 @@ export function LiquidacionCompleta({ onComplete }: LiquidacionCompletaProps) {
     classifications: ClassificationResult[]
   } | null>(null)
 
+  // Para PREP solo mostramos 3 pasos (Drive/Sheets ocurren luego al “Publicar”)
   const processingSteps: ProcessingStep[] = [
-    { id: "upload", label: "Subiendo PDF", icon: Upload, status: "pending" },
+    { id: "upload",  label: "Subiendo PDF",        icon: Upload,   status: "pending" },
     { id: "extract", label: "Extrayendo Imágenes", icon: FileImage, status: "pending" },
-    { id: "classify", label: "Clasificando con IA", icon: Brain, status: "pending" },
-    { id: "drive", label: "Subiendo a Drive", icon: Upload, status: "pending" },
-    { id: "sheets", label: "Creando Google Sheet", icon: Sheet, status: "pending" },
+    { id: "classify",label: "Clasificando con IA", icon: Brain,     status: "pending" },
   ]
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -68,9 +69,7 @@ export function LiquidacionCompleta({ onComplete }: LiquidacionCompletaProps) {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: {
-      "application/pdf": [".pdf"],
-    },
+    accept: { "application/pdf": [".pdf"] },
     multiple: false,
   })
 
@@ -96,36 +95,39 @@ export function LiquidacionCompleta({ onComplete }: LiquidacionCompletaProps) {
       // Simular progreso mientras se procesa
       const progressInterval = setInterval(() => {
         setProgress((prev) => {
-          const newProgress = prev + Math.random() * 10
-          const stepIndex = Math.floor(newProgress / 20)
-
-          if (stepIndex !== currentStep && stepIndex < processingSteps.length) {
-            setCurrentStep(stepIndex)
-          }
-
+          const newProgress = prev + Math.random() * 12
+          const stepIndex = Math.min(
+            Math.floor((newProgress / 100) * processingSteps.length),
+            processingSteps.length - 1
+          )
+          if (stepIndex !== currentStep) setCurrentStep(stepIndex)
           return Math.min(newProgress, 95)
         })
-      }, 1000)
+      }, 900)
 
-      const response = await fetch("/api/liquidacion", {
-        method: "POST",
-        body: formData,
-      })
-
+      const response = await fetch("/api/liquidacion", { method: "POST", body: formData })
       clearInterval(progressInterval)
 
-      if (!response.ok) {
-        throw new Error(`Error del servidor: ${response.status}`)
-      }
-
       const result = await response.json()
+      if (!response.ok) throw new Error(result?.error || `Error del servidor: ${response.status}`)
 
       setProgress(100)
       setCurrentStep(processingSteps.length - 1)
-      setResults(result)
 
-      if (onComplete) {
-        onComplete(result)
+      // NUEVO: flujo PREP → trae { documentName, folderUrl, images[] }
+      if (result?.images && Array.isArray(result.images)) {
+        setIsProcessing(false)
+        // manda al ResultsGrid (pantalla de revisión) vía prop
+        onComplete?.(result)
+        return
+      }
+
+      // COMPAT: si llega el flujo viejo (con sheetUrl), mostramos el panel de resultados
+      if (result?.sheetUrl) {
+        setResults(result)
+      } else {
+        // Si no es ninguno, al menos entregamos al caller
+        onComplete?.(result)
       }
     } catch (err) {
       setError(`Error al procesar: ${err instanceof Error ? err.message : "Error desconocido"}`)
@@ -145,6 +147,7 @@ export function LiquidacionCompleta({ onComplete }: LiquidacionCompletaProps) {
     setResults(null)
   }
 
+  // ==== Vista de resultados (solo para compat con flujo viejo) ====
   if (results) {
     return (
       <div className="max-w-6xl mx-auto space-y-6">
@@ -295,6 +298,7 @@ export function LiquidacionCompleta({ onComplete }: LiquidacionCompletaProps) {
     )
   }
 
+  // ==== Vista de formulario / progreso (PREP) ====
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div className="text-center space-y-2">
