@@ -7,7 +7,7 @@ import { tmpdir } from "os";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/* ----------------------- Helpers ----------------------- */
+/* ----------------------- Utils ----------------------- */
 
 function extractFolderId(folderUrl: string): string | null {
   if (!folderUrl) return null;
@@ -31,6 +31,22 @@ async function runPy(scriptName: string, args: string[]) {
     child.stderr.on("data", (d) => (stderr += d.toString()));
     child.on("close", (code) => resolve({ stdout, stderr, code: code ?? 0 }));
   });
+}
+
+/** Intenta parsear JSON tolerando logs en stdout. */
+function parseJsonLoose(s: string) {
+  try {
+    const t = (s || "").trim().replace(/^\uFEFF/, "");
+    return JSON.parse(t);
+  } catch {
+    const text = String(s ?? "");
+    const start = text.lastIndexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start !== -1 && end !== -1 && end >= start) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+    throw new Error("Salida del script no es JSON");
+  }
 }
 
 /* ----------------------- Handler ----------------------- */
@@ -68,7 +84,7 @@ export async function POST(request: NextRequest) {
         throw new Error(`commit_liquidacion.py exit code ${code}`);
       }
 
-      const out = JSON.parse(stdout.trim());
+      const out = parseJsonLoose(stdout);
       if (!out?.success) throw new Error(out?.error || "Commit fallido");
 
       return NextResponse.json({
@@ -119,7 +135,7 @@ export async function POST(request: NextRequest) {
       throw new Error(`prep_liquidacion.py exit code ${code}`);
     }
 
-    const payload = JSON.parse(stdout.trim());
+    const payload = parseJsonLoose(stdout);
     if (!payload?.success) throw new Error(payload?.error || "Fallo en preparación");
 
     const images = (payload.images || []).map((img: any, i: number) => ({

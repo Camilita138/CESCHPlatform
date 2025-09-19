@@ -1,12 +1,22 @@
+# scripts/prep_liquidacion.py
 import os, sys, json, tempfile, base64
 from typing import Any, Dict, List
 import requests
 
-# Importa tu extractor según el nombre que tengas en /scripts
+# ====== Muy importante: redirigir stdout a stderr para que los logs NO rompan el JSON ======
+_REAL_STDOUT = sys.stdout
+sys.stdout = sys.stderr  # a partir de aquí, todo print() va a STDERR
+
+# Importa tu extractor según el nombre de archivo que tengas en /scripts
 try:
     from extraer_imagenes import extract_images_from_pdf  # si tu archivo es extraer_imagenes.py
 except Exception:
     from extraerimagenes import extract_images_from_pdf   # fallback si es extraerimagenes.py
+
+def _emit_json(obj: Dict[str, Any]) -> None:
+    """Imprime SOLO el JSON al stdout real, sin logs alrededor."""
+    _REAL_STDOUT.write(json.dumps(obj, ensure_ascii=False))
+    _REAL_STDOUT.flush()
 
 def classify_b64(b64png: str, api_key: str) -> Dict[str, Any]:
     payload = {
@@ -26,9 +36,12 @@ def classify_b64(b64png: str, api_key: str) -> Dict[str, Any]:
         ],
     }
     try:
-        r = requests.post("https://api.openai.com/v1/chat/completions",
-                          headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                          json=payload, timeout=60)
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=90,
+        )
         r.raise_for_status()
         raw = r.json()["choices"][0]["message"]["content"] or "{}"
         data = json.loads(raw)
@@ -47,27 +60,31 @@ def to_b64(path: str) -> str:
 
 def main():
     if len(sys.argv) < 4:
-        print(json.dumps({"success": False, "error": "usage: prep_liquidacion.py <pdf_path> <doc_name> <openai_api_key>"}))
+        _emit_json({"success": False, "error": "usage: prep_liquidacion.py <pdf_path> <doc_name> <openai_api_key>"})
         return
+
     pdf_path, doc_name, api_key = sys.argv[1], sys.argv[2], sys.argv[3]
     try:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = os.path.join(tmp, "imgs")
             os.makedirs(out_dir, exist_ok=True)
+
+            # Esto puede imprimir logs; van a STDERR gracias a la redirección de arriba
             extract_images_from_pdf(pdf_path, out_dir)
 
             files = sorted(os.listdir(out_dir))
             images: List[Dict[str, Any]] = []
             for i, f in enumerate(files):
                 fp = os.path.join(out_dir, f)
-                if not os.path.isfile(fp): continue
+                if not os.path.isfile(fp):
+                    continue
                 b64 = to_b64(fp)
                 cls = classify_b64(b64, api_key)
                 images.append({"id": f"img{i+1}", "name": f, "b64": b64, **cls})
 
-            print(json.dumps({"success": True, "documentName": doc_name, "images": images}))
+            _emit_json({"success": True, "documentName": doc_name, "images": images})
     except Exception as e:
-        print(json.dumps({"success": False, "error": str(e)}))
+        _emit_json({"success": False, "error": str(e)})
 
 if __name__ == "__main__":
     main()
