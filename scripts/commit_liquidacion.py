@@ -1,22 +1,27 @@
 # scripts/commit_liquidacion.py
-import sys, os, json, base64, time, mimetypes, traceback
+import sys, os, json, base64, time, mimetypes, traceback, re
 from typing import Dict, Any, List
 
 from autenticacion import get_service   # Debe devolver clientes autenticados: get_service("drive") / get_service("sheets")
 
 # ---------- Helpers ----------
 
+def _hs6(v: str) -> str:
+    """Deja solo números y recorta a 6 dígitos."""
+    return re.sub(r"\D", "", v or "")[:6]
+
+def _to_uc_link(url: str) -> str:
+    """Convierte /file/d/<id>/... o ?id=<id> a uc?export=view&id=<id>."""
+    if not url:
+        return ""
+    m = re.search(r"/file/d/([A-Za-z0-9_-]+)", url) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
+    return f"https://drive.google.com/uc?export=view&id={m.group(1)}" if m else url
+
 def _upload_b64_to_drive(b64: str, name: str, folder_id: str, drive) -> str:
     data = base64.b64decode(b64)
     mime = mimetypes.guess_type(name)[0] or "image/png"
 
     file_metadata = {"name": name, "parents": [folder_id]}
-    media_body = {
-        "mimeType": mime
-    }
-
-    # Subida simple con media_body raw (workaround: use media upload via googleapiclient.http.MediaInMemoryUpload si lo tienes)
-    # Para mantenerlo sencillo y robusto, escribimos a tmp y usamos MediaFileUpload:
     import tempfile
     from googleapiclient.http import MediaFileUpload
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(name)[1] or ".png") as tmp:
@@ -109,29 +114,42 @@ def main():
         drive = get_service("drive")
         sheets = get_service("sheets")
 
-        # Subir imágenes si vienen en b64 y formar filas
+        # Subir imágenes si vienen en b64 o data: y formar filas
         rows = []
         for i, it in enumerate(items, 1):
             name = it.get("name") or f"image_{i:03d}.png"
-            url = it.get("url")
+            url = it.get("url") or ""
             b64 = it.get("b64")
 
-            if not url and b64:
-                # subimos y generamos url publica compatible con =IMAGE()
+            # Si la URL es data:image...;base64, extrae el payload y súbelo a Drive
+            if url.startswith("data:") and "base64," in url:
+                try:
+                    _, b64payload = url.split("base64,", 1)
+                    url = _upload_b64_to_drive(b64payload, name, folder_id, drive)
+                except Exception:
+                    url = ""  # si falla, que pase a siguiente branch
+
+            # Si no hay url pero viene b64 separado -> sube a Drive
+            if (not url) and b64:
                 url = _upload_b64_to_drive(b64, name, folder_id, drive)
 
-            hs = it.get("hs_code") or ""
-            com = it.get("commercial_name") or ""
-            conf = it.get("confidence")
+            # Normaliza URL a uc?export=view
+            url = _to_uc_link(url)
+
+            # Normaliza HS a 6 dígitos
+            hs = _hs6(it.get("hs_code") or it.get("classification", {}).get("hs_code", "") or "")
+            com = it.get("commercial_name") or it.get("classification", {}).get("commercial_name", "") or ""
+            conf = it.get("confidence") if it.get("confidence") is not None else it.get("classification", {}).get("confidence")
             try:
                 conf = float(conf) if conf is not None else ""
             except Exception:
                 conf = ""
-            reason = it.get("reason") or ""
+            reason = it.get("reason") or it.get("classification", {}).get("reason", "") or ""
 
+            # IMPORTANTE: B usa =IMAGE(Afila) para evitar problemas de comillas / data url
             rows.append([
                 url or "",
-                f'=IMAGE("{url}")' if url else "",
+                f"=IMAGE(A{i+1})" if url else "",
                 hs,
                 com,
                 conf,

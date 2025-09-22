@@ -4,6 +4,7 @@ import json
 import tempfile
 from typing import List, Dict, Any
 import requests
+import re
 
 # ====== REDIRECCIÓN: todo print() va a STDERR; stdout queda limpio para JSON ======
 _REAL_STDOUT = sys.stdout
@@ -28,12 +29,7 @@ def _mime_for_path(p: str) -> str:
     return "image/png"
 
 def classify_image_with_openai_base64(image_path: str, openai_api_key: str) -> Dict[str, Any]:
-    """
-    Clasifica usando DATA URL base64 + chat/completions (partes 'text' + 'image_url').
-    'image_url' acepta data URLs. Forzamos response_format=json_object.
-    """
     import base64
-
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     mime = _mime_for_path(image_path)
@@ -60,10 +56,7 @@ def classify_image_with_openai_base64(image_path: str, openai_api_key: str) -> D
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "Clasifica este producto según el sistema arancelario ecuatoriano:"},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{b64}"},
-                    },
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
                 ],
             },
         ],
@@ -100,10 +93,19 @@ def classify_image_with_openai_base64(image_path: str, openai_api_key: str) -> D
 
 # ------------------------------ Google Sheets ------------------------------
 
+def _hs6(v: str) -> str:
+    return re.sub(r"\D", "", v or "")[:6]
+
+def _to_uc_link(url: str) -> str:
+    if not url:
+        return ""
+    m = re.search(r"/file/d/([A-Za-z0-9_-]+)", url) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
+    return f"https://drive.google.com/uc?export=view&id={m.group(1)}" if m else url
+
 def create_liquidacion_sheet(image_data: List[Dict], doc_name: str, folder_id: str) -> str:
     """
     Crea Google Sheet en `folder_id` con:
-    A=URL, B=IMAGE(URL), C=HS, D=Nombre, E=Confianza, F=Justificación
+    A=URL, B=IMAGE(A), C=HS(6), D=Nombre, E=Confianza, F=Justificación
     """
     service = get_service("sheets")
     drive_service = get_service("drive")
@@ -126,18 +128,17 @@ def create_liquidacion_sheet(image_data: List[Dict], doc_name: str, folder_id: s
 
     headers = [["URL", "Vista", "Partida_Arancelaria", "Nombre_Comercial", "Confianza", "Justificación"]]
     rows = []
-    for item in image_data:
-        u = item["url"]
-        c = item["classification"]
+    for idx, item in enumerate(image_data, start=2):
+        u = _to_uc_link(item.get("url", ""))
+        c = item.get("classification") or {}
         rows.append([
-            u,                 # A: URL (preview)
-            f'=IMAGE("{u}")',  # B: Vista
-            c.get("hs_code", ""),
+            u,                 # A: URL (preview, normalizada)
+            f"=IMAGE(A{idx})", # B: Vista (referencia a A)
+            _hs6(c.get("hs_code", "")),
             c.get("commercial_name", ""),
             c.get("confidence", 0),
             c.get("reason", ""),
         ])
-
 
     body = {"values": headers + rows}
     service.spreadsheets().values().update(
@@ -190,7 +191,6 @@ def process_liquidacion_completa(pdf_path: str, doc_name: str, folder_id: str, o
             print("Clasificando imágenes con OpenAI...")
             image_data: List[Dict[str, Any]] = []
             for i, (url, name) in enumerate(zip(image_urls, image_names)):
-                # Clasificamos desde el archivo (base64 Data URL) para evitar problemas de accesibilidad externa
                 img_path = os.path.join(extraction_folder, name)
                 classification = classify_image_with_openai_base64(img_path, openai_api_key)
                 image_data.append({"name": name, "url": url, "classification": classification})

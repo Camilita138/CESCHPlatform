@@ -1,61 +1,111 @@
-import gspread
-import sys
-import json
-from datetime import datetime
+import re, os, base64, tempfile
+from autenticacion import get_service
+from googleapiclient.http import MediaFileUpload
 
-def create_liquidacion_sheet(image_data, doc_title, folder_id, credentials_path="credentials.json"):
+def _to_uc_link(url: str) -> str:
+    if not url:
+        return ""
+    m = re.search(r"/file/d/([A-Za-z0-9_-]+)", url) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
+    return f"https://drive.google.com/uc?export=view&id={m.group(1)}" if m else url
+
+def _hs6(v: str) -> str:
+    return re.sub(r"\D", "", v or "")[:6]
+
+def _upload_data_url_to_drive(data_url: str, name: str, folder_id: str, drive) -> str:
+    """Sube un data:image/...;base64,xxx a Drive y devuelve uc?export=view."""
+    _, b64payload = data_url.split("base64,", 1)
+    data = base64.b64decode(b64payload)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(name)[1] or ".png") as tmp:
+        tmp.write(data)
+        tmp.flush()
+        media = MediaFileUpload(tmp.name, mimetype="image/png", resumable=True)
+        created = drive.files().create(
+            body={"name": name, "parents": [folder_id]},
+            media_body=media,
+            fields="id",
+            supportsAllDrives=True,
+        ).execute()
+    try:
+        os.unlink(tmp.name)
+    except Exception:
+        pass
+    fid = created["id"]
+    drive.permissions().create(fileId=fid, body={"type":"anyone","role":"reader"}, supportsAllDrives=True).execute()
+    return f"https://drive.google.com/uc?export=view&id={fid}"
+
+def create_liquidacion_sheet(image_data, doc_name: str, folder_id: str) -> str:
     """
-    Crea un Google Sheet con columnas adicionales para liquidación:
-    - URL
-    - Vista (=IMAGE)
-    - Partida_Arancelaria
-    - Nombre_Comercial
-    - Confianza
-    - Justificación
+    Crea Google Sheet en `folder_id` con:
+    A=URL, B=IMAGE(A), C=HS(6), D=Nombre, E=Confianza, F=Justificación
     """
-    print(f"[SHEET] Creando hoja de liquidación: {doc_title}")
-    
-    # Autenticación con gspread
-    gc = gspread.service_account(filename=credentials_path)
-    
-    # Crear spreadsheet en la carpeta específica
-    sh = gc.create(doc_title, folder_id=folder_id)
-    ws = sh.sheet1
-    ws.update_title("Liquidación")
-    
-    # Encabezados
-    headers = ["URL", "Vista", "Partida_Arancelaria", "Nombre_Comercial", "Confianza", "Justificación"]
-    ws.update("A1:F1", [headers])
-    
-    # Datos
+    service = get_service("sheets")
+    drive_service = get_service("drive")
+
+    spreadsheet = service.spreadsheets().create(
+        body={"properties": {"title": f"Liquidación - {doc_name}"}}
+    ).execute()
+    spreadsheet_id = spreadsheet["spreadsheetId"]
+
+    # mover a carpeta destino
+    try:
+        drive_service.files().update(
+            fileId=spreadsheet_id,
+            addParents=folder_id,
+            removeParents="root",
+            supportsAllDrives=True,
+        ).execute()
+    except Exception as e:
+        print(f"[sheet] No pude mover el archivo: {e}")
+
+    headers = [["URL", "Vista", "Partida_Arancelaria", "Nombre_Comercial", "Confianza", "Justificación"]]
     rows = []
-    for item in image_data:
-        row = [
-            item['url'],
-            f'=IMAGE("{item["url"]}")',
-            item.get('hs_code', ''),
-            item.get('commercial_name', ''),
-            item.get('confidence', 0),
-            item.get('reason', '')
-        ]
-        rows.append(row)
-    
-    if rows:
-        range_name = f"A2:F{len(rows) + 1}"
-        ws.update(range_name, rows, value_input_option="USER_ENTERED")
-    
-    sheet_url = f"https://docs.google.com/spreadsheets/d/{sh.id}"
-    print(f"[SHEET] Creado: {sheet_url}")
-    return sheet_url
+    for idx, item in enumerate(image_data, start=2):
+        raw_url = item.get("url", "")
+        name = item.get("name") or f"image_{idx-1:03d}.png"
 
-if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Uso: python crear_sheet_liquidacion.py <image_data_json> <doc_title> <folder_id>")
-        sys.exit(1)
-    
-    image_data = json.loads(sys.argv[1])
-    doc_title = sys.argv[2]
-    folder_id = sys.argv[3]
-    
-    sheet_url = create_liquidacion_sheet(image_data, doc_title, folder_id)
-    print(sheet_url)
+        # Si viene data URL, subir y reemplazar
+        if raw_url.startswith("data:") and "base64," in raw_url:
+            try:
+                u = _upload_data_url_to_drive(raw_url, name, folder_id, drive_service)
+            except Exception:
+                u = ""
+        else:
+            u = _to_uc_link(raw_url)
+
+        c = item.get("classification") or {}
+        rows.append([
+            u,
+            f"=IMAGE(A{idx})",
+            _hs6(c.get("hs_code", "")),
+            c.get("commercial_name", ""),
+            c.get("confidence", 0) or 0,
+            c.get("reason", ""),
+        ])
+
+    service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range="A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": headers + rows},
+    ).execute()
+
+    # Formato cabecera
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "requests": [{
+                "repeatCell": {
+                    "range": {"sheetId": 0, "startRowIndex": 0, "endRowIndex": 1},
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {"red": 0.2, "green": 0.6, "blue": 0.9},
+                            "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat)"
+                }
+            }]
+        },
+    ).execute()
+
+    return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
