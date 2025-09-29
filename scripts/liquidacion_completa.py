@@ -1,3 +1,4 @@
+# liquidacion_completa.py
 import os
 import sys
 import json
@@ -14,6 +15,27 @@ from extraerimagenes import extract_images_from_pdf
 from subirfotos import upload_images_to_drive
 from autenticacion import get_service
 
+# ===================== Helpers URL =====================
+
+def _extract_drive_id(url: str) -> str:
+    if not url:
+        return ""
+    m = (re.search(r"/file/d/([A-Za-z0-9_-]+)", url)
+         or re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
+         or re.search(r"/d/([A-Za-z0-9_-]+)", url))
+    if m:
+        return m.group(1)
+    m2 = re.search(r"lh3\.googleusercontent\.com/d/([A-Za-z0-9_-]+)", url)
+    return m2.group(1) if m2 else ""
+
+def _public_img_url(file_id: str, prefer: str = "lh3") -> str:
+    fid = (file_id or "").strip()
+    if not fid:
+        return ""
+    if prefer == "lh3":
+        return f"https://lh3.googleusercontent.com/d/{fid}=s0"
+    return f"https://drive.google.com/uc?export=download&id={fid}"
+
 # ------------------------------ OpenAI ------------------------------
 
 def _mime_for_path(p: str) -> str:
@@ -29,7 +51,11 @@ def _mime_for_path(p: str) -> str:
     return "image/png"
 
 def classify_image_with_openai_base64(image_path: str, openai_api_key: str) -> Dict[str, Any]:
+    """
+    Clasifica usando DATA URL base64 + chat/completions.
+    """
     import base64
+
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     mime = _mime_for_path(image_path)
@@ -93,19 +119,10 @@ def classify_image_with_openai_base64(image_path: str, openai_api_key: str) -> D
 
 # ------------------------------ Google Sheets ------------------------------
 
-def _hs6(v: str) -> str:
-    return re.sub(r"\D", "", v or "")[:6]
-
-def _to_uc_link(url: str) -> str:
-    if not url:
-        return ""
-    m = re.search(r"/file/d/([A-Za-z0-9_-]+)", url) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
-    return f"https://drive.google.com/uc?export=view&id={m.group(1)}" if m else url
-
 def create_liquidacion_sheet(image_data: List[Dict], doc_name: str, folder_id: str) -> str:
     """
     Crea Google Sheet en `folder_id` con:
-    A=URL, B=IMAGE(A), C=HS(6), D=Nombre, E=Confianza, F=Justificación
+    A=URL, B=IMAGE(URL), C=HS, D=Nombre, E=Confianza, F=Justificación
     """
     service = get_service("sheets")
     drive_service = get_service("drive")
@@ -129,12 +146,16 @@ def create_liquidacion_sheet(image_data: List[Dict], doc_name: str, folder_id: s
     headers = [["URL", "Vista", "Partida_Arancelaria", "Nombre_Comercial", "Confianza", "Justificación"]]
     rows = []
     for idx, item in enumerate(image_data, start=2):
-        u = _to_uc_link(item.get("url", ""))
-        c = item.get("classification") or {}
+        # Normaliza URL de imagen a link directo
+        raw_u = item.get("url", "")
+        fid = _extract_drive_id(raw_u)
+        u = _public_img_url(fid, prefer="lh3") if fid else raw_u
+
+        c = item["classification"]
         rows.append([
-            u,                 # A: URL (preview, normalizada)
-            f"=IMAGE(A{idx})", # B: Vista (referencia a A)
-            _hs6(c.get("hs_code", "")),
+            u,                  # A: URL directa
+            f"=IMAGE(A{idx})",  # B: Vista
+            c.get("hs_code", ""),
             c.get("commercial_name", ""),
             c.get("confidence", 0),
             c.get("reason", ""),
@@ -193,7 +214,10 @@ def process_liquidacion_completa(pdf_path: str, doc_name: str, folder_id: str, o
             for i, (url, name) in enumerate(zip(image_urls, image_names)):
                 img_path = os.path.join(extraction_folder, name)
                 classification = classify_image_with_openai_base64(img_path, openai_api_key)
-                image_data.append({"name": name, "url": url, "classification": classification})
+                # Normalizamos aquí también por si luego reutilizas image_data
+                fid = _extract_drive_id(url or "")
+                direct_url = _public_img_url(fid, prefer="lh3") if fid else url
+                image_data.append({"name": name, "url": direct_url, "classification": classification})
                 print(f"Procesada imagen {i+1}/{len(image_names)}: {name}")
 
             print("Creando hoja de Google Sheets...")

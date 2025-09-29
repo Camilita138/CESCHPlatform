@@ -1,42 +1,38 @@
-import re, os, base64, tempfile
+# crear_sheet_liquidacion.py
+import re
+from typing import Dict, Any, List
 from autenticacion import get_service
-from googleapiclient.http import MediaFileUpload
 
-def _to_uc_link(url: str) -> str:
+# ===================== Helpers URL =====================
+
+def _extract_drive_id(url: str) -> str:
     if not url:
         return ""
-    m = re.search(r"/file/d/([A-Za-z0-9_-]+)", url) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
-    return f"https://drive.google.com/uc?export=view&id={m.group(1)}" if m else url
+    m = (re.search(r"/file/d/([A-Za-z0-9_-]+)", url)
+         or re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
+         or re.search(r"/d/([A-Za-z0-9_-]+)", url))
+    if m:
+        return m.group(1)
+    m2 = re.search(r"lh3\.googleusercontent\.com/d/([A-Za-z0-9_-]+)", url)
+    return m2.group(1) if m2 else ""
+
+def _public_img_url(file_id: str, prefer: str = "lh3") -> str:
+    fid = (file_id or "").strip()
+    if not fid:
+        return ""
+    if prefer == "lh3":
+        return f"https://lh3.googleusercontent.com/d/{fid}=s0"
+    return f"https://drive.google.com/uc?export=download&id={fid}"
 
 def _hs6(v: str) -> str:
     return re.sub(r"\D", "", v or "")[:6]
 
-def _upload_data_url_to_drive(data_url: str, name: str, folder_id: str, drive) -> str:
-    """Sube un data:image/...;base64,xxx a Drive y devuelve uc?export=view."""
-    _, b64payload = data_url.split("base64,", 1)
-    data = base64.b64decode(b64payload)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(name)[1] or ".png") as tmp:
-        tmp.write(data)
-        tmp.flush()
-        media = MediaFileUpload(tmp.name, mimetype="image/png", resumable=True)
-        created = drive.files().create(
-            body={"name": name, "parents": [folder_id]},
-            media_body=media,
-            fields="id",
-            supportsAllDrives=True,
-        ).execute()
-    try:
-        os.unlink(tmp.name)
-    except Exception:
-        pass
-    fid = created["id"]
-    drive.permissions().create(fileId=fid, body={"type":"anyone","role":"reader"}, supportsAllDrives=True).execute()
-    return f"https://drive.google.com/uc?export=view&id={fid}"
+# ===================== Crear Sheet =====================
 
-def create_liquidacion_sheet(image_data, doc_name: str, folder_id: str) -> str:
+def create_liquidacion_sheet(image_data: List[Dict[str, Any]], doc_name: str, folder_id: str) -> str:
     """
     Crea Google Sheet en `folder_id` con:
-    A=URL, B=IMAGE(A), C=HS(6), D=Nombre, E=Confianza, F=Justificación
+    A=URL directa, B=IMAGE(A), C=HS(6), D=Nombre, E=Confianza, F=Justificación
     """
     service = get_service("sheets")
     drive_service = get_service("drive")
@@ -58,19 +54,12 @@ def create_liquidacion_sheet(image_data, doc_name: str, folder_id: str) -> str:
         print(f"[sheet] No pude mover el archivo: {e}")
 
     headers = [["URL", "Vista", "Partida_Arancelaria", "Nombre_Comercial", "Confianza", "Justificación"]]
-    rows = []
-    for idx, item in enumerate(image_data, start=2):
-        raw_url = item.get("url", "")
-        name = item.get("name") or f"image_{idx-1:03d}.png"
+    rows: List[List[Any]] = []
 
-        # Si viene data URL, subir y reemplazar
-        if raw_url.startswith("data:") and "base64," in raw_url:
-            try:
-                u = _upload_data_url_to_drive(raw_url, name, folder_id, drive_service)
-            except Exception:
-                u = ""
-        else:
-            u = _to_uc_link(raw_url)
+    for idx, item in enumerate(image_data, start=2):
+        raw_url = item.get("url", "") or ""
+        fid = _extract_drive_id(raw_url)
+        u = _public_img_url(fid, prefer="lh3") if fid else raw_url
 
         c = item.get("classification") or {}
         rows.append([

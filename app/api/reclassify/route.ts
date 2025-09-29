@@ -16,21 +16,19 @@ export async function POST(req: Request) {
       messages: [
         {
           role: "system",
-          content:
-            [
-              "Eres un especialista en clasificación arancelaria (Ecuador / SENAE, NANDINA).",
-              "Devuelve SOLO JSON con el esquema:",
-              "{",
-              '  "hsCode": "string",',
-              '  "commercialName": "string",            // nombre tal como vino (o el que consideres correcto si está vacío)',
-              '  "normalizedName": "string",            // nombre COMERCIAL FORMAL en español (Ecuador), singular, sin marcas',
-              '  "suggestions": ["string","string","string"], // hasta 3 nombres formales alternativos',
-              '  "confidence": 0-1,',
-              '  "reason": "string"',
-              "}",
-              "Normaliza términos coloquiales (p.ej., “parlante” → “altavoz”; “audífonos” → “auriculares”).",
-              "Evita marcas y adjetivos de marketing; usa descriptores técnicos relevantes solo si se observan en la imagen (p. ej., 'Bluetooth', 'activo', 'portátil').",
-            ].join(" ")
+          content: [
+            "Eres un especialista en clasificación arancelaria (Ecuador / SENAE, NANDINA).",
+            "Devuelve SOLO JSON con el esquema:",
+            "{",
+            '  "hsCode": "string",',
+            '  "commercialName": "string",',
+            '  "normalizedName": "string",',
+            '  "suggestions": ["string","string","string"],',
+            '  "confidence": 0-1,',
+            '  "reason": "string",',
+            '  "linkCotizador": "string" // un link de referencia en Amazon o similar con un producto parecido',
+            "}"
+          ].join(" ")
         },
         {
           role: "user",
@@ -38,7 +36,7 @@ export async function POST(req: Request) {
             {
               type: "text",
               text:
-                "Clasifica este producto según el sistema arancelario ecuatoriano y propone un nombre comercial formal." +
+                "Clasifica este producto según el sistema arancelario ecuatoriano y además devuelve un link de referencia (Amazon, eBay o Alibaba) con un producto similar para cotizar." +
                 (commercialName ? ` Nombre ingresado: ${commercialName}` : ""),
             },
             { type: "image_url", image_url: { url: imageUrl } },
@@ -59,6 +57,7 @@ export async function POST(req: Request) {
       suggestions: Array.isArray(data.suggestions) ? data.suggestions.slice(0, 3) : [],
       confidence: typeof data.confidence === "number" ? data.confidence : null,
       reason: data.reason || "",
+      linkCotizador: data.linkCotizador || "", // 👈 Nuevo campo
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "error" }, { status: 500 });
