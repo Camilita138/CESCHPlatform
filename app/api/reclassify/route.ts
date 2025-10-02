@@ -26,9 +26,9 @@ export async function POST(req: Request) {
             '  "suggestions": ["string","string","string"],',
             '  "confidence": 0-1,',
             '  "reason": "string",',
-            '  "linkCotizador": "string" // un link de referencia en Amazon o similar con un producto parecido',
+            '  "linkCotizador": "string" // link a Amazon, eBay o Alibaba con producto similar',
             "}"
-          ].join(" ")
+          ].join(" "),
         },
         {
           role: "user",
@@ -36,7 +36,7 @@ export async function POST(req: Request) {
             {
               type: "text",
               text:
-                "Clasifica este producto según el sistema arancelario ecuatoriano y además devuelve un link de referencia (Amazon, eBay o Alibaba) con un producto similar para cotizar." +
+                "Clasifica este producto según el sistema arancelario ecuatoriano y devuelve también un link de referencia (Amazon, eBay o Alibaba) con un producto similar." +
                 (commercialName ? ` Nombre ingresado: ${commercialName}` : ""),
             },
             { type: "image_url", image_url: { url: imageUrl } },
@@ -57,7 +57,7 @@ export async function POST(req: Request) {
       suggestions: Array.isArray(data.suggestions) ? data.suggestions.slice(0, 3) : [],
       confidence: typeof data.confidence === "number" ? data.confidence : null,
       reason: data.reason || "",
-      linkCotizador: data.linkCotizador || "", // 👈 Nuevo campo
+      linkCotizador: data.linkCotizador || "", // 👈 nuevo campo
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "error" }, { status: 500 });
