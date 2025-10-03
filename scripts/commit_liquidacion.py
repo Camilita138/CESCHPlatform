@@ -1,28 +1,44 @@
 import sys, os, json, base64, mimetypes, traceback, tempfile
-from typing import Dict, Any, List
+from typing import List, Any
 from autenticacion import get_service
 from googleapiclient.http import MediaFileUpload
 
+# =========================
+# IDS DE PLANTILLAS
+# =========================
+TEMPLATES = {
+    "aereo": "11G1xXCDwhnvzJS9yvB8q26fsozVvAvcpOm19vaAGONs",
+    "maritimo": "1m2H_QSNOa6JIp7Pyq1aAwRATB6MSQ6LXD5YWiBOM4F0",
+    "contenedor": "1SIJhWSJPZnNQ69FSIn-XEzqFqGrQ9sI5X-yf2mY8R3A"
+}
 
+# ----------------------
+# Subida de imágenes
+# ----------------------
 def _upload_b64_to_drive(b64: str, name: str, folder_id: str, drive) -> str:
     """Sube imagen a Drive, la hace pública y devuelve URL directa válida para =IMAGE()"""
     data = base64.b64decode(b64)
     mime = mimetypes.guess_type(name)[0] or "image/png"
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(name)[1] or ".png") as tmp:
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(name)[1] or ".png")
+    try:
         tmp.write(data)
         tmp.flush()
-        media = MediaFileUpload(tmp.name, mimetype=mime, resumable=True)
+        tmp.close()  # 👈 Cerramos el archivo antes de usarlo en MediaFileUpload
+
+        media = MediaFileUpload(tmp.name, mimetype=mime, resumable=False)
         created = drive.files().create(
             body={"name": name, "parents": [folder_id]},
             media_body=media,
             fields="id",
             supportsAllDrives=True,
         ).execute()
-    try:
-        os.unlink(tmp.name)
-    except Exception:
-        pass
+
+    finally:
+        try:
+            os.unlink(tmp.name)  # 👈 Ahora sí se puede borrar sin error en Windows
+        except Exception:
+            pass
 
     file_id = created["id"]
 
@@ -33,119 +49,123 @@ def _upload_b64_to_drive(b64: str, name: str, folder_id: str, drive) -> str:
         supportsAllDrives=True,
     ).execute()
 
-    # URL directa (carga rápida) y compatible con =IMAGE()
     return f"https://lh3.googleusercontent.com/d/{file_id}=s0"
 
 
-def _create_sheet(title: str, folder_id: str, drive, sheets) -> str:
-    created = drive.files().create(
-        body={
-            "name": title,
-            "mimeType": "application/vnd.google-apps.spreadsheet",
-            "parents": [folder_id],
-        },
+# ----------------------
+# Crear copia de plantilla
+# ----------------------
+def copy_template(template_key: str, title: str, folder_id: str, drive) -> str:
+    if template_key not in TEMPLATES:
+        raise RuntimeError(f"Plantilla desconocida: {template_key}")
+    template_id = TEMPLATES[template_key]
+    copied = drive.files().copy(
+        fileId=template_id,
+        body={"name": title, "parents": [folder_id]},
         fields="id",
         supportsAllDrives=True,
     ).execute()
-    return created["id"]
+    return copied["id"]
 
+# ----------------------
+# Escribir datos en la plantilla
+# ----------------------
+def _write_rows_to_template(spreadsheet_id: str, rows: List[List[Any]], sheets) -> None:
+    start_row = 3  # inicio en la fila 3
+    num_items = len(rows)
 
-def _write_rows_to_sheet(spreadsheet_id: str, rows: List[List[Any]], sheets) -> None:
-    headers = [["URL","Vista","Partida_Arancelaria","Nombre_Comercial","Confianza","Justificación","Link_Cotizador"]]
+    meta = sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheet_id = meta["sheets"][0]["properties"]["sheetId"]
+
+    # Insertar filas si hace falta
+    requests = []
+    if num_items > 1:
+        requests.append({
+            "insertDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": start_row,
+                    "endIndex": start_row + (num_items - 1)
+                },
+                "inheritFromBefore": True
+            }
+        })
+
+    if requests:
+        sheets.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests}
+        ).execute()
+
+    # Escribir valores
     sheets.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
-        range="A1",
+        range=f"A{start_row}",
         valueInputOption="USER_ENTERED",
-        body={"values": headers + rows},
+        body={"values": rows},
     ).execute()
 
-    # Formato cabecera
-    sheets.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={
-            "requests": [{
-                "repeatCell": {
-                    "range": {"sheetId": 0, "startRowIndex": 0, "endRowIndex": 1},
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": {"red": 0.2, "green": 0.6, "blue": 0.9},
-                            "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat)"
-                }
-            }]
-        },
-    ).execute()
-
-
+# ----------------------
+# MAIN
+# ----------------------
 def main():
     try:
-        if len(sys.argv) != 2:
-            raise RuntimeError("Uso: python commit_liquidacion.py <payload_json_path>")
+        if len(sys.argv) != 3:
+            raise RuntimeError("Uso: python commit_liquidacion.py <payload_json_path> <tipo_plantilla>")
 
-        payload_path = sys.argv[1]
+        payload_path, template_key = sys.argv[1], sys.argv[2]
         with open(payload_path, "r", encoding="utf-8") as f:
             payload = json.load(f)
 
-        document_name = payload.get("documentName") or "Liquidación"
-        folder_id = payload.get("folderId") or payload.get("folder_id")
-        items = payload.get("items") or []
+        document_name = payload.get("documentName", "Liquidación")
+        folder_id = payload.get("folderId")
+        items = payload.get("items", [])
         if not folder_id:
             raise RuntimeError("Falta folderId en payload")
 
         drive = get_service("drive")
         sheets = get_service("sheets")
 
+        ssid = copy_template(template_key, f"{document_name} ({template_key})", folder_id, drive)
+
         rows: List[List[Any]] = []
         for i, it in enumerate(items, 1):
             name = it.get("name") or f"image_{i:03d}.png"
 
-            # 1) Conseguir base64
-            b64 = (
-                it.get("b64")
-                or it.get("_b64")
-                or (it.get("url").split(",", 1)[1] if isinstance(it.get("url"), str) and it["url"].startswith("data:image") else None)
-            )
+            # Imagen
+            b64 = it.get("b64") or it.get("_b64")
+            url = _upload_b64_to_drive(b64, name, folder_id, drive) if b64 else it.get("url", "")
 
-            # 2) Subir siempre a Drive
-            url = _upload_b64_to_drive(b64, name, folder_id, drive) if b64 else (
-                it.get("url") if isinstance(it.get("url"), str) and it["url"].startswith("http") else ""
-            )
-
-            hs = str(it.get("hs_code") or it.get("hsCode") or "")[:6]
+            hs = str(it.get("hs_code") or it.get("hsCode") or "")
             com = it.get("commercial_name") or it.get("commercialName") or ""
-            conf = it.get("confidence")
-            try:
-                conf = float(conf) if conf is not None else ""
-            except Exception:
-                conf = ""
-            reason = it.get("reason") or ""
+            link_cotizador = it.get("linkCotizador") or f"https://www.amazon.com/s?k={com.replace(' ', '+')}"
 
-            # 👇 Nuevo: Link cotizador (de OpenAI o generado con Amazon)
-            link_cotizador = it.get("linkCotizador") or ""
-            if not link_cotizador and com:
-                query = com.replace(" ", "+")
-                link_cotizador = f"https://www.amazon.com/s?k={query}"
+            # Mapeo exacto columnas
+            row = [
+                link_cotizador,     # A: Link cotizador
+                "",                 # B: Proveedores
+                "",                 # C: Modelo
+                f'=IMAGE("{url}")', # D: Foto (imagen dentro de celda)
+                url,                # E: Link de la imagen
+                "",                 # F: Descripción (vacío)
+                com,                # G/H: Nombre comercial
+                1,                  # I: Unidad de medida
+                1,                  # J: Cantidad x Caja
+                1,                  # K: Cajas
+                1,                  # L: Total unidades
+                "", "", "", "", "", "", "", "", "",  # M-T vacíos
+                hs,                 # U: Partida (HS code)
+                "", "", "", "", ""  # V-Z vacíos
+            ]
+            rows.append(row)
 
-            rows.append([
-                url or "",
-                f"=IMAGE(A{i+1})" if url else "",
-                hs,
-                com,
-                conf,
-                reason,
-                link_cotizador,
-            ])
-
-        ssid = _create_sheet(f"Liquidación - {document_name}", folder_id, drive, sheets)
-        _write_rows_to_sheet(ssid, rows, sheets)
+        _write_rows_to_template(ssid, rows, sheets)
 
         print(json.dumps({
             "success": True,
             "sheetUrl": f"https://docs.google.com/spreadsheets/d/{ssid}",
             "driveFolder": f"https://drive.google.com/drive/folders/{folder_id}",
-            "total": len(rows),
             "rows": len(rows),
         }, ensure_ascii=False))
     except Exception as e:
@@ -153,7 +173,5 @@ def main():
                          ensure_ascii=False))
         sys.exit(1)
 
-
 if __name__ == "__main__":
     main()
-    

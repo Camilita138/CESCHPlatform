@@ -62,6 +62,8 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [publishing, setPublishing] = useState(false);
   const [publishOk, setPublishOk] = useState<{sheetUrl: string; total: number} | null>(null);
+  const [templateKey, setTemplateKey] = useState<"aereo" | "maritimo" | "contenedor">("aereo"); // 👈 selector de plantilla
+
   const documentName: string = data?.documentName || "Liquidación";
   const folderUrl: string = data?.folderUrl || "";
 
@@ -93,7 +95,6 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
         reason: r.reason || r.classification?.reason || "",
       };
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.images, data?.classifications]);
 
   const [rows, setRows] = useState<Item[]>(() => initialRows);
@@ -128,16 +129,13 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
     setPublishing(true);
     setPublishOk(null);
     try {
-      // armamos payload para el commit
       const items = rows.map((r) => ({
         name: r.name,
-        url: r.url,                     // si es data URL, tu backend re-sube desde b64 si lo necesita
+        url: r.url,
         hsCode: (r.hsCode || "").replace(/\D/g, "").slice(0, 6),
         commercialName: r.commercialName || "",
         confidence: r.confidence ?? 0,
         reason: r.reason || "",
-        // si tu commit usa b64: descomenta y el backend lo usará
-        // b64: r.b64,
       }));
 
       const resp = await fetch("/api/liquidacion", {
@@ -148,6 +146,7 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
           documentName,
           folderUrl,
           items,
+          templateKey,   // 👈 mandamos la plantilla seleccionada
         }),
       });
 
@@ -177,6 +176,17 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Selector de plantilla */}
+          <select
+            value={templateKey}
+            onChange={(e) => setTemplateKey(e.target.value as any)}
+            className="border rounded-md px-2 py-1 text-sm"
+          >
+            <option value="aereo">Plantilla Aéreo</option>
+            <option value="maritimo">Plantilla Marítimo</option>
+            <option value="contenedor">Plantilla Contenedor</option>
+          </select>
+
           <Button
             onClick={publishToSheets}
             disabled={publishing || total === 0}
