@@ -1,4 +1,3 @@
-# scripts/prep_liquidacion.py
 import os, sys, json, tempfile, base64
 from typing import Any, Dict, List
 import requests
@@ -20,6 +19,9 @@ def _emit_json(obj: Dict[str, Any]) -> None:
     _REAL_STDOUT.flush()
 
 
+# ==========================================================
+# CLASIFICADOR DE PRODUCTOS (con prioridad Alibaba)
+# ==========================================================
 def classify_b64(b64png: str, api_key: str) -> Dict[str, Any]:
     """Clasifica la imagen y devuelve hsCode, nombre, confianza, razón y link de cotizador."""
     payload = {
@@ -40,17 +42,17 @@ def classify_b64(b64png: str, api_key: str) -> Dict[str, Any]:
                     "\"reason\":\"texto\","
                     "\"linkCotizador\":\"url\""
                     "}. "
-                    "⚠️ Reglas para `linkCotizador`: "
-                    "- Debe ser un link DIRECTO a un producto real en Amazon, eBay o Alibaba. "
-                    "- Elige un producto muy parecido a la imagen y al nombre comercial. "
-                    "- Evita devolver links de búsqueda generales o categorías. "
-                    "- Si no puedes identificar un producto específico, SOLO como último recurso devuelve un link de búsqueda en Amazon con el nombre comercial."
+                    "Reglas para linkCotizador: "
+                    "- Prioriza enlaces de Alibaba (www.alibaba.com). "
+                    "- Si no se encuentra un producto exacto, genera un link de búsqueda en Alibaba con 2–5 palabras clave relevantes (en inglés). "
+                    "- Solo si no se puede determinar, usa un link de búsqueda en Amazon como respaldo. "
+                    "- Evita devolver links de categorías o páginas vacías."
             },
             {
                 "role": "user",
                 "content": [
                     {"type": "text",
-                     "text": "Clasifica este producto según el sistema arancelario ecuatoriano y devuelve un link de referencia real para cotizar (Amazon, eBay o Alibaba)."},
+                     "text": "Describe brevemente el producto de la imagen y genera un link de cotización (preferiblemente de Alibaba)."},
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64png}"}}
                 ]
             }
@@ -67,12 +69,15 @@ def classify_b64(b64png: str, api_key: str) -> Dict[str, Any]:
         raw = r.json()["choices"][0]["message"]["content"] or "{}"
         data = json.loads(raw)
 
-        # Fallback automático: si no hay link válido → crea uno de búsqueda en Amazon
         cname = str(data.get("commercialName") or data.get("commercial_name") or "").strip()
         link = str(data.get("linkCotizador") or "").strip()
-        if (not link or "amazon.com/s?" in link) and cname:
-            q = cname.replace(" ", "+")
-            link = f"https://www.amazon.com/s?k={q}"
+
+        # Fallback automático → siempre al menos un link de búsqueda en Alibaba
+        if not link or "amazon.com" in link or "ebay.com" in link or "search?" not in link:
+            # Reescribe link para forzar Alibaba en todos los casos
+            q = cname.replace(" ", "+") if cname else "product"
+            if not link or "amazon.com" in link or "ebay.com" in link or "alibaba.com" not in link:
+                link = f"https://www.alibaba.com/trade/search?fsb=y&IndexArea=product_en&SearchText={q}"
 
         return {
             "hs_code": str(data.get("hsCode") or data.get("hs_code") or ""),
@@ -96,6 +101,9 @@ def to_b64(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
+# ==========================================================
+# MAIN PRINCIPAL
+# ==========================================================
 def main():
     if len(sys.argv) < 4:
         _emit_json({"success": False, "error": "usage: prep_liquidacion.py <pdf_path> <doc_name> <openai_api_key>"})

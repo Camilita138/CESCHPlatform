@@ -1,4 +1,3 @@
-// app/api/reclassify/route.ts
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
@@ -26,8 +25,9 @@ export async function POST(req: Request) {
             '  "suggestions": ["string","string","string"],',
             '  "confidence": 0-1,',
             '  "reason": "string",',
-            '  "linkCotizador": "string" // link a Amazon, eBay o Alibaba con producto similar',
-            "}"
+            '  "linkCotizador": "string" // link a Alibaba o Amazon con producto similar',
+            "}.",
+            "Prioriza siempre resultados de Alibaba; si no se encuentra un producto específico, genera un link de búsqueda con las palabras clave del nombre comercial."
           ].join(" "),
         },
         {
@@ -36,7 +36,7 @@ export async function POST(req: Request) {
             {
               type: "text",
               text:
-                "Clasifica este producto según el sistema arancelario ecuatoriano y devuelve también un link de referencia (Amazon, eBay o Alibaba) con un producto similar." +
+                "Clasifica este producto según el sistema arancelario ecuatoriano y devuelve también un link de referencia (preferiblemente de Alibaba) con un producto similar." +
                 (commercialName ? ` Nombre ingresado: ${commercialName}` : ""),
             },
             { type: "image_url", image_url: { url: imageUrl } },
@@ -50,14 +50,22 @@ export async function POST(req: Request) {
       data = JSON.parse(completion.choices[0]?.message?.content || "{}");
     } catch {}
 
+    // Fallback automático → genera link de búsqueda Alibaba si no se devolvió uno válido
+    let link = data.linkCotizador || "";
+    const cname = data.commercialName || commercialName || "";
+    if (!link || !link.includes("alibaba.com")) {
+      const q = cname.replace(/\s+/g, "+") || "product";
+      link = `https://www.alibaba.com/trade/search?fsb=y&IndexArea=product_en&SearchText=${q}`;
+    }
+
     return NextResponse.json({
-      hsCode: data.hsCode || data.hs_code || "",
-      commercialName: data.commercialName || data.commercial_name || commercialName || "",
-      normalizedName: data.normalizedName || data.normalized_name || "",
+      hsCode: data.hsCode || "",
+      commercialName: cname,
+      normalizedName: data.normalizedName || "",
       suggestions: Array.isArray(data.suggestions) ? data.suggestions.slice(0, 3) : [],
       confidence: typeof data.confidence === "number" ? data.confidence : null,
       reason: data.reason || "",
-      linkCotizador: data.linkCotizador || "", // 👈 nuevo campo
+      linkCotizador: link,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "error" }, { status: 500 });
