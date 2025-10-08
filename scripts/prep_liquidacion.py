@@ -79,6 +79,7 @@ def classify_b64(b64png: str, api_key: str) -> Dict[str, Any]:
             if not link or "amazon.com" in link or "ebay.com" in link or "alibaba.com" not in link:
                 link = f"https://www.alibaba.com/trade/search?fsb=y&IndexArea=product_en&SearchText={q}"
 
+
         return {
             "hs_code": str(data.get("hsCode") or data.get("hs_code") or ""),
             "commercial_name": cname,
