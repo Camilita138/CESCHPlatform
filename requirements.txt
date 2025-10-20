@@ -1,0 +1,26 @@
+﻿requests>=2.31.0
+google-auth>=2.32.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.137.0
+gspread>=6.0.0
+PyMuPDF>=1.24.1
+Pillow>=10.3.0
+# ===== Librerías principales =====
+requests>=2.31.0
+PyMuPDF>=1.24.1
+Pillow>=10.3.0
+pandas>=2.2.3
+numpy>=1.26.4
+
+# ===== Google APIs =====
+google-auth>=2.32.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.137.0
+gspread>=6.0.0
+
+# ===== OpenAI / IA =====
+openai>=1.55.0
+
+# ===== Utilidades extra =====
+tqdm>=4.66.5        # barras de progreso
+python-dotenv>=1.0.1  # lectura de variables .env si algún script lo usa
