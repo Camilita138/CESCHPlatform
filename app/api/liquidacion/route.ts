@@ -24,22 +24,51 @@ function extractFolderId(folderUrl: string): string | null {
  * Usa "python" en Windows y "python3" en Linux/Render.
  */
 async function runPy(scriptName: string, args: string[]) {
+  // Detecta automáticamente el comando correcto según el sistema
   const PY_CMD = process.platform === "win32" ? "python" : "python3";
   const scriptPath = join(process.cwd(), "scripts", scriptName);
 
-  return new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
-    const child = spawn(PY_CMD, [scriptPath, ...args], {
-      cwd: process.cwd(),
-      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+  console.log(`🧩 Ejecutando script Python: ${scriptPath}`);
+  console.log(`📦 Args: ${JSON.stringify(args)}`);
+  console.log(`🐍 Python CMD: ${PY_CMD}`);
 
-    let stdout = "", stderr = "";
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
-    child.on("close", (code) => resolve({ stdout, stderr, code: code ?? 0 }));
+  return new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+    try {
+      const child = spawn(PY_CMD, [scriptPath, ...args], {
+        cwd: process.cwd(),
+        env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stdout = "", stderr = "";
+
+      child.stdout.on("data", (d) => {
+        const chunk = d.toString();
+        stdout += chunk;
+        if (chunk.includes("Traceback") || chunk.includes("Error")) {
+          console.error("⚠️ Python stdout contiene error:", chunk);
+        }
+      });
+
+      child.stderr.on("data", (d) => {
+        const chunk = d.toString();
+        stderr += chunk;
+        console.error("🐍 Python stderr:", chunk);
+      });
+
+      child.on("close", (code) => {
+        console.log(`✅ Script terminado: ${scriptName} (exit code ${code})`);
+        if (stderr.trim() !== "") console.error(`🚨 STDERR (${scriptName}):`, stderr);
+        if (stdout.trim() !== "") console.log(`📤 STDOUT (${scriptName}):`, stdout);
+        resolve({ stdout, stderr, code: code ?? 0 });
+      });
+    } catch (err: any) {
+      console.error("❌ Error al ejecutar Python:", err.message || err);
+      resolve({ stdout: "", stderr: err.message || String(err), code: 1 });
+    }
   });
 }
+
 
 /**
  * Intenta parsear un JSON incluso si la salida del script contiene logs.
