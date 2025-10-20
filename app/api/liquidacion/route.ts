@@ -19,13 +19,21 @@ function extractFolderId(folderUrl: string): string | null {
   return null;
 }
 
+/**
+ * Ejecuta un script Python de manera multiplataforma.
+ * Usa "python" en Windows y "python3" en Linux/Render.
+ */
 async function runPy(scriptName: string, args: string[]) {
-  const pythonExe = process.env.PYTHON_PATH || "python";
+  const PY_CMD = process.platform === "win32" ? "python" : "python3";
   const scriptPath = join(process.cwd(), "scripts", scriptName);
+
   return new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
-    const child = spawn(pythonExe, [scriptPath, ...args], {
+    const child = spawn(PY_CMD, [scriptPath, ...args], {
+      cwd: process.cwd(),
       env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+      stdio: ["ignore", "pipe", "pipe"],
     });
+
     let stdout = "", stderr = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
     child.stderr.on("data", (d) => (stderr += d.toString()));
@@ -33,6 +41,9 @@ async function runPy(scriptName: string, args: string[]) {
   });
 }
 
+/**
+ * Intenta parsear un JSON incluso si la salida del script contiene logs.
+ */
 function parseJsonLoose(s: string) {
   try {
     const t = (s || "").trim().replace(/^\uFEFF/, "");
@@ -58,20 +69,38 @@ export async function POST(request: NextRequest) {
     try {
       const body = await request.json();
       if (body?.action !== "commit") {
-        return NextResponse.json({ error: "Acción inválida. Usa action='commit'." }, { status: 400 });
+        return NextResponse.json(
+          { error: "Acción inválida. Usa action='commit'." },
+          { status: 400 }
+        );
       }
-      if (!body?.documentName || !body?.folderUrl || !Array.isArray(body?.items) || !body?.templateKey) {
-        return NextResponse.json({ error: "Payload inválido (documentName, folderUrl, items, templateKey)" }, { status: 400 });
+      if (
+        !body?.documentName ||
+        !body?.folderUrl ||
+        !Array.isArray(body?.items) ||
+        !body?.templateKey
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Payload inválido (documentName, folderUrl, items, templateKey)",
+          },
+          { status: 400 }
+        );
       }
 
       const folderId = extractFolderId(body.folderUrl);
       if (!folderId) {
-        return NextResponse.json({ error: "URL/ID de carpeta Google Drive inválida" }, { status: 400 });
+        return NextResponse.json(
+          { error: "URL/ID de carpeta Google Drive inválida" },
+          { status: 400 }
+        );
       }
 
       // pasar TODO al script de commit
       const itemsForPy = body.items.map((it: any, idx: number) => {
-        const name = it?.name || `image_${String(idx + 1).padStart(3, "0")}.png`;
+        const name =
+          it?.name || `image_${String(idx + 1).padStart(3, "0")}.png`;
         let b64: string | null = it?._b64 || it?.b64 || null;
         if (!b64 && typeof it?.url === "string" && it.url.startsWith("data:image")) {
           const parts = it.url.split(",", 1);
@@ -80,8 +109,18 @@ export async function POST(request: NextRequest) {
         return {
           name,
           b64,
-          hs_code: it?.hs_code ?? it?.hsCode ?? it?.partida ?? it?.classification?.hs_code ?? "",
-          commercial_name: it?.commercial_name ?? it?.commercialName ?? it?.nombre_comercial ?? it?.classification?.commercial_name ?? "",
+          hs_code:
+            it?.hs_code ??
+            it?.hsCode ??
+            it?.partida ??
+            it?.classification?.hs_code ??
+            "",
+          commercial_name:
+            it?.commercial_name ??
+            it?.commercialName ??
+            it?.nombre_comercial ??
+            it?.classification?.commercial_name ??
+            "",
           confidence: it?.confidence ?? it?.classification?.confidence ?? "",
           reason: it?.reason ?? it?.classification?.reason ?? "",
           linkCotizador: it?.linkCotizador || it?.link_cotizador || "",
@@ -92,7 +131,10 @@ export async function POST(request: NextRequest) {
           cantidad_x_caja: it?.cantidad_x_caja ?? null,
           cajas: it?.cajas ?? null,
           total_unidades: it?.total_unidades ?? null,
-          partida: (it?.partida || it?.hs_code || it?.hsCode || "").toString().replace(/\D/g, "").slice(0, 10),
+          partida: (it?.partida || it?.hs_code || it?.hsCode || "")
+            .toString()
+            .replace(/\D/g, "")
+            .slice(0, 10),
           precio_unitario_usd: it?.precio_unitario_usd ?? null,
           total_usd: it?.total_usd ?? null,
           link_de_la_imagen: it?.link_de_la_imagen ?? it?.picture_url ?? "",
@@ -101,11 +143,21 @@ export async function POST(request: NextRequest) {
         };
       });
 
-      const payload = { documentName: body.documentName, folderId, items: itemsForPy };
+      const payload = {
+        documentName: body.documentName,
+        folderId,
+        items: itemsForPy,
+      };
+
       tmpPayloadPath = join(tmpdir(), `commit_${Date.now()}.json`);
       await writeFile(tmpPayloadPath, JSON.stringify(payload), "utf-8");
 
-      const { stdout, stderr, code } = await runPy("commit_liquidacion.py", [tmpPayloadPath, body.templateKey]);
+      // Ejecutar script commit_liquidacion.py
+      const { stdout, stderr, code } = await runPy("commit_liquidacion.py", [
+        tmpPayloadPath,
+        body.templateKey,
+      ]);
+
       if (stderr) console.error("[commit_liquidacion stderr]", stderr);
       if (code !== 0) {
         console.error("[commit_liquidacion stdout]", stdout);
@@ -115,12 +167,23 @@ export async function POST(request: NextRequest) {
       const out = parseJsonLoose(stdout);
       if (!out?.success) throw new Error(out?.error || "Commit fallido");
 
-      return NextResponse.json({ success: true, sheetUrl: out.sheetUrl, rows: out.rows });
+      return NextResponse.json({
+        success: true,
+        sheetUrl: out.sheetUrl,
+        rows: out.rows,
+      });
     } catch (e: any) {
       console.error("[/api/liquidacion commit] error:", e?.message || e);
-      return NextResponse.json({ error: e?.message || "Error interno (commit)" }, { status: 500 });
+      return NextResponse.json(
+        { error: e?.message || "Error interno (commit)" },
+        { status: 500 }
+      );
     } finally {
-      if (tmpPayloadPath) { try { await unlink(tmpPayloadPath); } catch {} }
+      if (tmpPayloadPath) {
+        try {
+          await unlink(tmpPayloadPath);
+        } catch {}
+      }
     }
   }
 
@@ -139,7 +202,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "OPENAI_API_KEY no configurada" }, { status: 500 });
     }
 
-    // 1) Guardar PDF
+    // 1) Guardar PDF temporal
     const bytes = await file.arrayBuffer();
     tempFilePath = join(tmpdir(), `upload_${Date.now()}_${(file as any).name || "file.pdf"}`);
     await writeFile(tempFilePath, Buffer.from(bytes));
@@ -162,8 +225,6 @@ export async function POST(request: NextRequest) {
 
     const proformaRows = Array.isArray(pr?.rows) ? pr.rows : [];
     console.log("✅ Proforma rows detectados:", proformaRows.length);
-
-
 
     // 3) Tu extractor: imágenes + clasificación HS
     const prep = await runPy("prep_liquidacion.py", [tempFilePath, docName, process.env.OPENAI_API_KEY!]);
@@ -216,13 +277,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       documentName: payload.documentName,
       folderUrl,
-      items,             // <- la UI usa data.items   
-      totalImages: items.length
+      items,
+      totalImages: items.length,
     });
   } catch (e: any) {
     console.error("[/api/liquidacion prep] error:", e?.message || e);
     return NextResponse.json({ error: e?.message || "Error interno (prep)" }, { status: 500 });
   } finally {
-    if (tempFilePath) { try { await unlink(tempFilePath); } catch {} }
+    if (tempFilePath) {
+      try {
+        await unlink(tempFilePath);
+      } catch {}
+    }
   }
 }
