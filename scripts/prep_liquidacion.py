@@ -1,4 +1,5 @@
-import os, sys, json, tempfile, base64
+# scripts/prep_liquidacion.py
+import os, sys, io, json, tempfile, base64, subprocess
 from typing import Any, Dict, List
 import requests
 
@@ -18,6 +19,110 @@ def _emit_json(obj: Dict[str, Any]) -> None:
     _REAL_STDOUT.write(json.dumps(obj, ensure_ascii=False))
     _REAL_STDOUT.flush()
 
+# ==========================================================
+# Helpers de proforma
+# ==========================================================
+ESP_KEYS = [
+    "nombre_comercial","descripcion","unidad_de_medida","cantidad_x_caja","cajas",
+    "total_unidades","partida","precio_unitario_usd","total_usd",
+    "link_de_la_imagen","link_cotizador","proveedores","modelo"
+]
+
+def _safe_num(x):
+    try:
+        if x in (None, "", "None"):
+            return None
+        return float(str(x).replace(",", "").replace("$",""))
+    except Exception:
+        return None
+
+def _run_parser_proforma(pdf_path: str) -> List[Dict[str, Any]]:
+    """
+    Ejecuta scripts/parser_proforma.py y devuelve filas normalizadas en español.
+    Si no existe o falla, retorna [] y no rompe el flujo.
+    """
+    script = os.path.join(os.getcwd(), "scripts", "parser_proforma.py")
+    if not os.path.exists(script):
+        return []
+
+    try:
+        out = subprocess.check_output([sys.executable, script, pdf_path], cwd=os.getcwd(), stderr=subprocess.STDOUT, timeout=180)
+        data = json.loads(out.decode("utf-8", errors="ignore"))
+        rows = data.get("rows", []) or []
+    except Exception:
+        return []
+
+    norm: List[Dict[str, Any]] = []
+    for i, r in enumerate(rows, 1):
+        out = {
+            "item_no": r.get("item_no", i),
+            "nombre_comercial": r.get("nombre_comercial") or r.get("commercial_name") or "",
+            "descripcion": r.get("descripcion") or r.get("description") or "",
+            "unidad_de_medida": (r.get("unidad_de_medida") or r.get("um") or "PZA"),
+            "cantidad_x_caja": r.get("cantidad_x_caja") or r.get("qty_per_box"),
+            "cajas": r.get("cajas") or r.get("package"),
+            "total_unidades": r.get("total_unidades") or r.get("total_units"),
+            "partida": (r.get("partida") or r.get("hs_code") or r.get("hsCode") or ""),
+            "precio_unitario_usd": _safe_num(r.get("precio_unitario_usd") or r.get("unit_price_usd")),
+            "total_usd": _safe_num(r.get("total_usd")),
+            "link_de_la_imagen": r.get("link_de_la_imagen") or r.get("picture_url") or "",
+            "link_cotizador": r.get("link_cotizador") or r.get("linkCotizador") or "",
+            "proveedores": r.get("proveedores") or "",
+            "modelo": r.get("modelo") or r.get("model") or "",
+        }
+        # Derivados
+        if out["total_unidades"] in (None, "", 0) and out["cantidad_x_caja"] and out["cajas"]:
+            try:
+                out["total_unidades"] = int(out["cantidad_x_caja"]) * int(out["cajas"])
+            except Exception:
+                pass
+        if out["total_usd"] in (None, "") and out["precio_unitario_usd"] and out["total_unidades"]:
+            try:
+                out["total_usd"] = round(float(out["precio_unitario_usd"]) * float(out["total_unidades"]), 2)
+            except Exception:
+                pass
+        # limpia partida (solo dígitos)
+        out["partida"] = "".join(ch for ch in str(out["partida"]) if ch.isdigit())[:10] if out["partida"] else ""
+        norm.append(out)
+    return norm
+
+def _merge_ai_with_proforma(ai_item: Dict[str, Any], proforma_row: Dict[str, Any] | None) -> Dict[str, Any]:
+    """
+    Fusiona IA + Proforma. La proforma manda si trae el dato; si no, queda IA.
+    """
+    merged = dict(ai_item)
+    if proforma_row:
+        for k in ESP_KEYS:
+            v = proforma_row.get(k)
+            if v not in (None, "", "None"):
+                merged[k] = v
+
+        # nombre comercial (alias para UI y commit)
+        if proforma_row.get("nombre_comercial"):
+            merged["commercial_name"] = proforma_row["nombre_comercial"]
+
+        # partida prioriza proforma
+        if proforma_row.get("partida"):
+            merged["hs_code"] = proforma_row["partida"]
+
+        # si no hay b64 y viene link de imagen, úsalo
+        if not merged.get("b64") and proforma_row.get("link_de_la_imagen"):
+            merged["picture_url"] = proforma_row["link_de_la_imagen"]
+
+        # derivados
+        cxj = proforma_row.get("cantidad_x_caja") or merged.get("cantidad_x_caja")
+        cajas = proforma_row.get("cajas") or merged.get("cajas")
+        if not merged.get("total_unidades") and cxj and cajas:
+            try:
+                merged["total_unidades"] = int(cxj) * int(cajas)
+            except Exception:
+                pass
+        if not merged.get("total_usd") and merged.get("precio_unitario_usd") and merged.get("total_unidades"):
+            try:
+                merged["total_usd"] = round(float(merged["precio_unitario_usd"]) * float(merged["total_unidades"]), 2)
+            except Exception:
+                pass
+    return merged
 
 # ==========================================================
 # CLASIFICADOR DE PRODUCTOS (con prioridad Alibaba)
@@ -72,13 +177,10 @@ def classify_b64(b64png: str, api_key: str) -> Dict[str, Any]:
         cname = str(data.get("commercialName") or data.get("commercial_name") or "").strip()
         link = str(data.get("linkCotizador") or "").strip()
 
-        # Fallback automático → siempre al menos un link de búsqueda en Alibaba
-        if not link or "amazon.com" in link or "ebay.com" in link or "search?" not in link:
-            # Reescribe link para forzar Alibaba en todos los casos
+        # Fallback → búsqueda en Alibaba
+        if not link or "alibaba.com" not in link:
             q = cname.replace(" ", "+") if cname else "product"
-            if not link or "amazon.com" in link or "ebay.com" in link or "alibaba.com" not in link:
-                link = f"https://www.alibaba.com/trade/search?fsb=y&IndexArea=product_en&SearchText={q}"
-
+            link = f"https://www.alibaba.com/trade/search?fsb=y&IndexArea=product_en&SearchText={q}"
 
         return {
             "hs_code": str(data.get("hsCode") or data.get("hs_code") or ""),
@@ -96,11 +198,9 @@ def classify_b64(b64png: str, api_key: str) -> Dict[str, Any]:
             "linkCotizador": "",
         }
 
-
 def to_b64(path: str) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
-
 
 # ==========================================================
 # MAIN PRINCIPAL
@@ -116,9 +216,13 @@ def main():
             out_dir = os.path.join(tmp, "imgs")
             os.makedirs(out_dir, exist_ok=True)
 
-            # Extrae imágenes
+            # 1) Extrae imágenes
             extract_images_from_pdf(pdf_path, out_dir)
 
+            # 2) Lee proforma (tablas / OCR) si está disponible
+            proforma_rows = _run_parser_proforma(pdf_path)  # [] si no hay parser o falla
+
+            # 3) Clasifica + fusiona
             files = sorted(os.listdir(out_dir))
             images: List[Dict[str, Any]] = []
             for i, f in enumerate(files):
@@ -127,7 +231,8 @@ def main():
                     continue
                 b64 = to_b64(fp)
                 cls = classify_b64(b64, api_key)
-                images.append({
+
+                base_item = {
                     "id": f"img{i+1}",
                     "name": f,
                     "b64": b64,
@@ -136,12 +241,17 @@ def main():
                     "confidence": cls.get("confidence", 0),
                     "reason": cls.get("reason", ""),
                     "linkCotizador": cls.get("linkCotizador", ""),
-                })
+                    # alias español popular en tu pipeline
+                    "nombre_comercial": cls.get("commercial_name", ""),
+                }
+
+                row = proforma_rows[i] if i < len(proforma_rows) else None
+                merged = _merge_ai_with_proforma(base_item, row)
+                images.append(merged)
 
             _emit_json({"success": True, "documentName": doc_name, "images": images})
     except Exception as e:
         _emit_json({"success": False, "error": str(e)})
-
 
 if __name__ == "__main__":
     main()

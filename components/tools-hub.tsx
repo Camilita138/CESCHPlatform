@@ -1,20 +1,34 @@
+// components/tools-hub.tsx
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileImage, ScanSearch, Plus, ArrowRight, CheckCircle } from "lucide-react";
+import {
+  FileImage,
+  ScanSearch,
+  Plus,
+  ArrowRight,
+  CheckCircle,
+  Table as TableIcon,
+} from "lucide-react";
 
 interface ToolsHubProps {
-  onToolStart: (data: any) => void;
+  onToolStart: (data: { toolId: string; [key: string]: unknown }) => void;
 }
 
 type Tool = {
-  id: "pdf-images" | "liquidacion-completa";
+  id: "pdf-images" | "liquidacion-completa" | "proforma";
   title: string;
   description: string;
-  icon: any;
+  icon: React.ComponentType<{ className?: string }>;
   category: string;
   status: "available";
   features: string[];
@@ -22,9 +36,24 @@ type Tool = {
 
 const tools: Tool[] = [
   {
+    id: "proforma",
+    title: "Lector de Proformas",
+    description:
+      "Sube una proforma (PDF/imagen/Excel), extráela como tabla editable y prepara el payload para la liquidación.",
+    icon: TableIcon,
+    category: "Documentos",
+    status: "available",
+    features: [
+      "Soporte PDF/Imagen/Excel",
+      "Normalización de columnas",
+      "Edición previa a liquidación",
+    ],
+  },
+  {
     id: "pdf-images",
     title: "Extractor de Imágenes PDF",
-    description: "Extrae todas las imágenes de documentos PDF y las organiza automáticamente",
+    description:
+      "Extrae todas las imágenes de documentos PDF y las organiza automáticamente.",
     icon: FileImage,
     category: "Documentos",
     status: "available",
@@ -33,11 +62,17 @@ const tools: Tool[] = [
   {
     id: "liquidacion-completa",
     title: "Liquidación Completa",
-    description: "Extrae imágenes de PDF y las clasifica arancelariamente usando IA",
+    description:
+      "Extrae imágenes de PDF y clasifica arancelariamente usando IA. Genera la liquidación en Google Sheets.",
     icon: ScanSearch,
     category: "Clasificación Arancelaria",
     status: "available",
-    features: ["Extracción de imágenes", "Clasificación con IA", "Códigos arancelarios", "Hojas automáticas"],
+    features: [
+      "Extracción de imágenes",
+      "Clasificación con IA",
+      "Códigos arancelarios",
+      "Hojas automáticas",
+    ],
   },
 ];
 
@@ -68,13 +103,12 @@ function AddCard() {
 }
 
 export function ToolsHub({ onToolStart }: ToolsHubProps) {
-  const [selectedTool, setSelectedTool] = useState<string | null>(null);
+  const [selectedTool, setSelectedTool] = useState<Tool["id"] | null>(null);
 
   const handleToolSelect = (toolId: Tool["id"]) => {
     const tool = tools.find((t) => t.id === toolId);
     if (!tool) return;
 
-    // Notifica al dashboard para cambiar de vista
     onToolStart({
       toolId,
       toolName: tool.title,
@@ -99,7 +133,9 @@ export function ToolsHub({ onToolStart }: ToolsHubProps) {
           return (
             <Card
               key={tool.id}
-              className={`cursor-pointer transition-all hover:shadow-lg ${isSelected ? "ring-2 ring-accent" : ""}`}
+              className={`cursor-pointer transition-all hover:shadow-lg ${
+                isSelected ? "ring-2 ring-accent" : ""
+              }`}
               onClick={() => setSelectedTool(tool.id)}
             >
               <CardHeader>
@@ -153,7 +189,7 @@ export function ToolsHub({ onToolStart }: ToolsHubProps) {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
         <Card>
           <CardContent className="p-4 text-center">
-            <div className="text-2xl font-bold text-accent">2</div>
+            <div className="text-2xl font-bold text-accent">{tools.length}</div>
             <div className="text-sm text-muted-foreground">Herramientas Disponibles</div>
           </CardContent>
         </Card>

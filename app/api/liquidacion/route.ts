@@ -1,3 +1,4 @@
+// app/api/liquidacion/route.ts
 import { type NextRequest, NextResponse } from "next/server";
 import { spawn } from "child_process";
 import { writeFile, unlink } from "fs/promises";
@@ -8,14 +9,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /* ----------------------- Utils ----------------------- */
-
 function extractFolderId(folderUrl: string): string | null {
   if (!folderUrl) return null;
   const byPath = folderUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
   if (byPath) return byPath[1];
   const byQuery = folderUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/);
   if (byQuery) return byQuery[1];
-  if (/^[a-zA-Z0-9_-]{10,}$/.test(folderUrl)) return folderUrl; // ya es ID
+  if (/^[a-zA-Z0-9_-]{10,}$/.test(folderUrl)) return folderUrl;
   return null;
 }
 
@@ -33,7 +33,6 @@ async function runPy(scriptName: string, args: string[]) {
   });
 }
 
-/** Intenta parsear JSON tolerando logs en stdout. */
 function parseJsonLoose(s: string) {
   try {
     const t = (s || "").trim().replace(/^\uFEFF/, "");
@@ -50,11 +49,10 @@ function parseJsonLoose(s: string) {
 }
 
 /* ----------------------- Handler ----------------------- */
-
 export async function POST(request: NextRequest) {
   const contentType = request.headers.get("content-type") || "";
 
-  // ---------- Fase COMMIT (JSON) ----------
+  // ---------- COMMIT (JSON) ----------
   if (contentType.includes("application/json")) {
     let tmpPayloadPath: string | null = null;
     try {
@@ -71,21 +69,35 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "URL/ID de carpeta Google Drive inválida" }, { status: 400 });
       }
 
-      // 🔴 Normalizamos los items para el script: incluimos sí o sí b64/_b64
+      // pasar TODO al script de commit
       const itemsForPy = body.items.map((it: any, idx: number) => {
         const name = it?.name || `image_${String(idx + 1).padStart(3, "0")}.png`;
         let b64: string | null = it?._b64 || it?.b64 || null;
         if (!b64 && typeof it?.url === "string" && it.url.startsWith("data:image")) {
           const parts = it.url.split(",", 1);
-          b64 = it.url.slice(parts[0].length + 1); // después de la primera coma
+          b64 = it.url.slice(parts[0].length + 1);
         }
         return {
           name,
-          b64, // lo usará el script para subir a Drive
-          hs_code: it?.hs_code ?? it?.hsCode ?? it?.classification?.hs_code ?? "",
-          commercial_name: it?.commercial_name ?? it?.commercialName ?? it?.classification?.commercial_name ?? "",
+          b64,
+          hs_code: it?.hs_code ?? it?.hsCode ?? it?.partida ?? it?.classification?.hs_code ?? "",
+          commercial_name: it?.commercial_name ?? it?.commercialName ?? it?.nombre_comercial ?? it?.classification?.commercial_name ?? "",
           confidence: it?.confidence ?? it?.classification?.confidence ?? "",
           reason: it?.reason ?? it?.classification?.reason ?? "",
+          linkCotizador: it?.linkCotizador || it?.link_cotizador || "",
+          // campos proforma
+          nombre_comercial: it?.nombre_comercial ?? it?.commercialName ?? "",
+          descripcion: it?.descripcion ?? "",
+          unidad_de_medida: it?.unidad_de_medida ?? "",
+          cantidad_x_caja: it?.cantidad_x_caja ?? null,
+          cajas: it?.cajas ?? null,
+          total_unidades: it?.total_unidades ?? null,
+          partida: (it?.partida || it?.hs_code || it?.hsCode || "").toString().replace(/\D/g, "").slice(0, 10),
+          precio_unitario_usd: it?.precio_unitario_usd ?? null,
+          total_usd: it?.total_usd ?? null,
+          link_de_la_imagen: it?.link_de_la_imagen ?? it?.picture_url ?? "",
+          proveedores: it?.proveedores ?? "",
+          modelo: it?.modelo ?? it?.model ?? "",
         };
       });
 
@@ -93,9 +105,7 @@ export async function POST(request: NextRequest) {
       tmpPayloadPath = join(tmpdir(), `commit_${Date.now()}.json`);
       await writeFile(tmpPayloadPath, JSON.stringify(payload), "utf-8");
 
-      // 🔑 Ahora pasamos el segundo argumento: templateKey
       const { stdout, stderr, code } = await runPy("commit_liquidacion.py", [tmpPayloadPath, body.templateKey]);
-
       if (stderr) console.error("[commit_liquidacion stderr]", stderr);
       if (code !== 0) {
         console.error("[commit_liquidacion stdout]", stdout);
@@ -105,13 +115,7 @@ export async function POST(request: NextRequest) {
       const out = parseJsonLoose(stdout);
       if (!out?.success) throw new Error(out?.error || "Commit fallido");
 
-      return NextResponse.json({
-        success: true,
-        sheetUrl: out.sheetUrl,
-        driveFolder: out.driveFolder,
-        total: out.total,
-        rows: out.rows,
-      });
+      return NextResponse.json({ success: true, sheetUrl: out.sheetUrl, rows: out.rows });
     } catch (e: any) {
       console.error("[/api/liquidacion commit] error:", e?.message || e);
       return NextResponse.json({ error: e?.message || "Error interno (commit)" }, { status: 500 });
@@ -120,7 +124,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ---------- Fase PREP (multipart/form-data) ----------
+  // ---------- PREP (multipart/form-data) ----------
   let tempFilePath: string | null = null;
   try {
     const formData = await request.formData();
@@ -135,43 +139,85 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "OPENAI_API_KEY no configurada" }, { status: 500 });
     }
 
-    // Guardar PDF temporal
+    // 1) Guardar PDF
     const bytes = await file.arrayBuffer();
     tempFilePath = join(tmpdir(), `upload_${Date.now()}_${(file as any).name || "file.pdf"}`);
     await writeFile(tempFilePath, Buffer.from(bytes));
 
-    // Ejecuta PREP (extraer + clasificar base64)
-    const { stdout, stderr, code } = await runPy("prep_liquidacion.py", [
-      tempFilePath,
-      docName,
-      process.env.OPENAI_API_KEY!,
-    ]);
-
-    if (stderr) console.error("[prep_liquidacion stderr]", stderr);
-    if (code !== 0) {
-      console.error("[prep_liquidacion stdout]", stdout);
-      throw new Error(`prep_liquidacion.py exit code ${code}`);
+    // 2) IA: leer la proforma (primeras 3 páginas)
+    const parsed = await runPy("ai_parse_proforma.py", [tempFilePath, "3", process.env.OPENAI_API_KEY!]);
+    const rawOutput = parsed.stdout.trim() || parsed.stderr.trim();
+    if (parsed.code !== 0) {
+      console.error("[ai_parse_proforma stdout]", parsed.stdout);
+      throw new Error(`ai_parse_proforma.py exit code ${parsed.code}`);
     }
 
-    const payload = parseJsonLoose(stdout);
+    // ⚠️ Algunos outputs vienen mezclados con logs o warnings, limpiamos el JSON puro
+    let pr: any = {};
+    try {
+      pr = parseJsonLoose(rawOutput);
+    } catch (err) {
+      console.error("❌ Error parsing AI output:", err, "Raw:", rawOutput);
+    }
+
+    const proformaRows = Array.isArray(pr?.rows) ? pr.rows : [];
+    console.log("✅ Proforma rows detectados:", proformaRows.length);
+
+
+
+    // 3) Tu extractor: imágenes + clasificación HS
+    const prep = await runPy("prep_liquidacion.py", [tempFilePath, docName, process.env.OPENAI_API_KEY!]);
+    if (prep.stderr) console.error("[prep_liquidacion stderr]", prep.stderr);
+    if (prep.code !== 0) {
+      console.error("[prep_liquidacion stdout]", prep.stdout);
+      throw new Error(`prep_liquidacion.py exit code ${prep.code}`);
+    }
+    const payload = parseJsonLoose(prep.stdout);
     if (!payload?.success) throw new Error(payload?.error || "Fallo en preparación");
 
-    const images = (payload.images || []).map((img: any, i: number) => ({
-      id: img.id || `img${i + 1}`,
-      url: `data:image/png;base64,${img.b64}`, // preview para UI
-      name: img.name || `image_${String(i + 1).padStart(3, "0")}.png`,
-      hsCode: img.hs_code || "",
-      commercialName: img.commercial_name || "",
-      confidence: typeof img.confidence === "number" ? img.confidence : null,
-      reason: img.reason || "",
-      _b64: img.b64, // base64 sin subir a Drive
-    }));
+    // 4) Mezclar por índice: proformaRows[i] + imagen/HS[i]
+    const images = Array.isArray(payload.images) ? payload.images : [];
+    const items = images.map((img: any, i: number) => {
+      const row = proformaRows[i] || {};
+      const partida = ((row.partida ?? img.hs_code) + "").replace(/\D/g, "").slice(0, 10);
+      return {
+        id: img.id || `img${i + 1}`,
+        name: img.name || `image_${String(i + 1).padStart(3, "0")}.png`,
+        url: `data:image/png;base64,${img.b64}`,
+        b64: img.b64,
+
+        // IA imágenes
+        hs_code: img.hs_code || partida,
+        commercial_name: img.commercial_name || row.nombre_comercial || "",
+        confidence: typeof img.confidence === "number" ? img.confidence : null,
+        reason: img.reason || "",
+        linkCotizador: img.linkCotizador || "",
+
+        // ===== Campos de PROFORMA (tabla editable) =====
+        nombre_comercial: row.nombre_comercial ?? img.commercial_name ?? "",
+        descripcion: row.descripcion ?? "",
+        modelo: row.modelo ?? "",
+        unidad_de_medida: row.unidad_de_medida ?? "PZA",
+        cantidad_x_caja: row.cantidad_x_caja ?? null,
+        cajas: row.cajas ?? null,
+        total_unidades: row.total_unidades ?? null,
+        partida,
+        precio_unitario_usd: row.precio_unitario_usd ?? null,
+        total_usd: row.total_usd ?? null,
+        link_de_la_imagen: row.link_de_la_imagen ?? "",
+        proveedores: row.proveedores ?? "",
+
+        // compat con vista de imágenes
+        hsCode: partida,
+        commercialName: row.nombre_comercial ?? img.commercial_name ?? "",
+      };
+    });
 
     return NextResponse.json({
       documentName: payload.documentName,
-      folderUrl, // se reutiliza en el commit
-      totalImages: images.length,
-      images,
+      folderUrl,
+      items,             // <- la UI usa data.items   
+      totalImages: items.length
     });
   } catch (e: any) {
     console.error("[/api/liquidacion prep] error:", e?.message || e);

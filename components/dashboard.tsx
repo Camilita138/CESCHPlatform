@@ -1,3 +1,4 @@
+// components/ui/dashboard.tsx
 "use client";
 
 import { useCallback, useState } from "react";
@@ -8,16 +9,12 @@ import { ResultsGrid } from "@/components/results-grid";
 import { HistoryPanel } from "@/components/history-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { LiquidacionCompleta } from "@/components/liquidacion-completa";
+import  ProformaReview from "@/components/proforma-review"; // 👈 importar
 
-type ActiveView =
-  | "herramientas"
-  | "procesando"
-  | "resultados"
-  | "historial"
-  | "configuracion";
+type ActiveView = "herramientas" | "procesando" | "resultados" | "historial" | "configuracion";
 
 type ToolStartPayload = {
-  toolId: "liquidacion-completa" | string;
+  toolId: "liquidacion-completa" | "proforma" | string; // 👈 agregar "proforma"
   [key: string]: unknown;
 };
 
@@ -41,19 +38,26 @@ export function Dashboard() {
     switch (activeView) {
       case "herramientas":
         return <ToolsHub onToolStart={handleToolStart} />;
+
       case "procesando":
+        // 👇 para Proforma mostramos el uploader + tabla (NO barra de pasos)
+        if (processingData?.toolId === "proforma") {
+          return <ProformaReview onComplete={handleProcessingComplete} />;
+        }
         if (processingData?.toolId === "liquidacion-completa") {
           return <LiquidacionCompleta onComplete={handleProcessingComplete} />;
         }
-        return (
-          <ProcessingStatus data={processingData} onComplete={handleProcessingComplete} />
-        );
+        return <ProcessingStatus data={processingData} onComplete={handleProcessingComplete} />;
+
       case "resultados":
         return <ResultsGrid data={results} />;
+
       case "historial":
         return <HistoryPanel />;
+
       case "configuracion":
         return <SettingsPanel />;
+
       default:
         return <ToolsHub onToolStart={handleToolStart} />;
     }
@@ -61,7 +65,6 @@ export function Dashboard() {
 
   return (
     <div className="flex h-screen bg-background">
-      {/* 👇 Pasamos un wrapper para que el tipo encaje perfecto */}
       <Sidebar activeView={activeView} onViewChange={(v) => setActiveView(v)} />
       <main className="flex-1 overflow-auto">
         <div className="p-6">{renderMainContent()}</div>

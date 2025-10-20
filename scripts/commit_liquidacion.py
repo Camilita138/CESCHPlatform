@@ -1,5 +1,5 @@
-# scripts/commit_liquidacion.py
-import sys, os, json, base64, mimetypes, traceback, tempfile, time
+import sys, os, json, base64, mimetypes, traceback, tempfile, time, subprocess
+from concurrent.futures import ThreadPoolExecutor
 from autenticacion import get_service
 from googleapiclient.http import MediaFileUpload
 
@@ -13,97 +13,74 @@ TEMPLATES = {
 }
 
 # ==================================================
-# AUXILIARES DRIVE
+# AUXILIARES
 # ==================================================
 def _upload_b64_to_drive(b64: str, name: str, folder_id: str, drive):
-    """Sube imagen a Drive y devuelve URL directa usable por =IMAGE()."""
+    """Sube una imagen desde b64 a Drive y devuelve URL directa válida para =IMAGE()."""
     data = base64.b64decode(b64)
     mime = mimetypes.guess_type(name)[0] or "image/png"
-
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     tmp.write(data)
     tmp.flush()
     tmp.close()
+    media = MediaFileUpload(tmp.name, mimetype=mime, resumable=False)
+    created = drive.files().create(
+        body={"name": name, "parents": [folder_id]},
+        media_body=media,
+        fields="id",
+        supportsAllDrives=True
+    ).execute()
+    fid = created["id"]
 
-    fid = None
-    try:
-        media = MediaFileUpload(tmp.name, mimetype=mime, resumable=False)
-        created = drive.files().create(
-            body={"name": name, "parents": [folder_id]},
-            media_body=media,
-            fields="id",
-            supportsAllDrives=True
-        ).execute()
-        fid = created["id"]
+    # Permiso público para que =IMAGE() funcione
+    drive.permissions().create(
+        fileId=fid,
+        body={"type": "anyone", "role": "reader"},
+        supportsAllDrives=True
+    ).execute()
 
-        # Permiso público
-        drive.permissions().create(
-            fileId=fid,
-            body={"type": "anyone", "role": "reader"},
-            supportsAllDrives=True
-        ).execute()
-    finally:
-        # Intentar eliminar el archivo temporal (Windows puede bloquearlo)
-        for _ in range(10):
-            try:
-                if os.path.exists(tmp.name):
-                    os.remove(tmp.name)
-                break
-            except PermissionError:
-                time.sleep(0.5)
-            except Exception:
-                break
+    # Intentar eliminar archivo temporal (Windows a veces bloquea)
+    for _ in range(5):
+        try:
+            os.remove(tmp.name)
+            break
+        except PermissionError:
+            time.sleep(0.25)
+        except Exception:
+            break
 
     return f"https://lh3.googleusercontent.com/d/{fid}=s0"
 
 
-# ==================================================
-# AUXILIARES SHEETS
-# ==================================================
-def _sheet_id_by_title(sheets, ssid, titles):
+def _sheet_ids_cache(sheets, ssid):
+    """Devuelve un dict {titulo: sheetId} con todos los títulos (trim)."""
     meta = sheets.spreadsheets().get(spreadsheetId=ssid).execute()
-    titles = [titles] if isinstance(titles, str) else list(titles)
-    want = {t.strip() for t in titles}
-    for s in meta["sheets"]:
-        if s["properties"]["title"].strip() in want:
-            return s["properties"]["sheetId"]
-    raise RuntimeError(f"No se encontró hoja: {titles}")
+    return {s["properties"]["title"].strip(): s["properties"]["sheetId"] for s in meta["sheets"]}
 
 
-def _get_colA(sheets, ssid, sheet, start, end=200):
-    rng = f"{sheet}!A{start}:A{end}"
-    vals = sheets.spreadsheets().values().get(
-        spreadsheetId=ssid, range=rng
-    ).execute().get("values", [])
-    # normaliza a strings
-    return [ (row[0] if row else "").strip() for row in vals ]
+def _resolve_sheet_id(sheet_ids, titles):
+    """Acepta un título o lista de títulos; devuelve el primero que exista en el archivo."""
+    if isinstance(titles, str):
+        titles = [titles]
+    for t in titles:
+        key = t.strip()
+        if key in sheet_ids:
+            return sheet_ids[key]
+    raise RuntimeError(f"No se encontró hoja con alguno de estos títulos: {titles}")
 
 
-def _find_row_containing_colA(sheets, ssid, sheet, text, start=1, end=200):
-    """Primera fila (1-based) donde la col A contiene 'text', desde 'start'."""
-    vals = _get_colA(sheets, ssid, sheet, start, end)
-    text = str(text).lower()
-    for idx, v in enumerate(vals, start):
-        if text in v.lower():
-            return idx
-    return None
+# ==================================================
+# CONSTRUCCIÓN DE REQUESTS (una sola batchUpdate)
+# ==================================================
+def _clone_rows_requests(sheet_id, start_row_1b, end_row_1b, n, col_end=200):
+    """Crea requests para copiar filas con formato."""
+    if n <= 1:
+        return []
+    block_h = end_row_1b - start_row_1b + 1
+    insert_start = end_row_1b
+    insert_end = insert_start + (n - 1) * block_h
 
-
-def _clone_exact_rows(sheets, ssid, sheet_title, start_row_1b, n_items, existing_rows=1):
-    """
-    Inserta filas para que el bloque tenga n_items, clonando formato y fórmulas exactas
-    desde la fila base (start_row_1b). Dinámico y sin romper referencias.
-    """
-    if n_items <= existing_rows:
-        return
-
-    sheet_id = _sheet_id_by_title(sheets, ssid, sheet_title)
-    to_add = n_items - existing_rows
-    insert_start = start_row_1b - 1 + existing_rows
-    insert_end = insert_start + to_add
-
-    # Paso 1: Insertar nuevas filas
-    requests = [{
+    reqs = [{
         "insertDimension": {
             "range": {
                 "sheetId": sheet_id,
@@ -111,148 +88,73 @@ def _clone_exact_rows(sheets, ssid, sheet_title, start_row_1b, n_items, existing
                 "startIndex": insert_start,
                 "endIndex": insert_end
             },
-            "inheritFromBefore": False
+            "inheritFromBefore": True
         }
     }]
 
-    # Paso 2: Copiar formato y fórmulas de la fila base
-    for i in range(to_add):
-        dst_row = start_row_1b + existing_rows + i
-        requests += [
-            {
-                "copyPaste": {
-                    "source": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row_1b - 1,
-                        "endRowIndex": start_row_1b,
-                    },
-                    "destination": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": dst_row - 1,
-                        "endRowIndex": dst_row,
-                    },
-                    "pasteType": "PASTE_FORMULA"
-                }
-            },
-            {
-                "copyPaste": {
-                    "source": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": start_row_1b - 1,
-                        "endRowIndex": start_row_1b,
-                    },
-                    "destination": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": dst_row - 1,
-                        "endRowIndex": dst_row,
-                    },
-                    "pasteType": "PASTE_FORMAT"
-                }
+    for i in range(1, n):
+        offset = (i - 1) * block_h
+        reqs.append({
+            "copyPaste": {
+                "source": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row_1b - 1,
+                    "endRowIndex": end_row_1b,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": col_end
+                },
+                "destination": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": end_row_1b + offset,
+                    "endRowIndex": end_row_1b + block_h + offset,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": col_end
+                },
+                "pasteType": "PASTE_NORMAL"
             }
-        ]
-
-    # Ejecutar en un solo batch
-    sheets.spreadsheets().batchUpdate(spreadsheetId=ssid, body={"requests": requests}).execute()
-
-    # Copiar fórmulas/valores exactos de la fila base a cada fila nueva
-    base_range = f"{sheet_title}!A{start_row_1b}:ZZ{start_row_1b}"
-    base_vals = sheets.spreadsheets().values().get(
-        spreadsheetId=ssid, range=base_range, valueRenderOption="FORMULA"
-    ).execute().get("values", [[]])[0]
-
-    writes = []
-    for i in range(existing_rows, n_items):
-        r = start_row_1b + i
-        writes.append({"range": f"{sheet_title}!A{r}:ZZ{r}", "values": [base_vals]})
-
-    if writes:
-        sheets.spreadsheets().values().batchUpdate(
-            spreadsheetId=ssid,
-            body={"valueInputOption": "USER_ENTERED", "data": writes}
-        ).execute()
+        })
+    return reqs
 
 
-# --------- CONTADORES DINÁMICOS (CON “CONTADOR”) ---------
-def _count_products_block_1cal(sheets, ssid):
-    """
-    Tabla superior 1.CÁL:
-      - Comienza en fila 3 (primera fila de datos)
-      - Termina justo antes del siguiente encabezado "MODELO" (del bloque inferior).
-    Devuelve (existing_rows, next_header_row).
-    """
-    start = 3
-    # Busca el siguiente "MODELO" a partir de la 8 para evitar el del header superior.
-    next_header = _find_row_containing_colA(sheets, ssid, "1.CÁL", "MODELO", start=8, end=300)
-    if not next_header:
-        # fallback largo por si cambia la plantilla: cuenta hasta un blank-run
-        colA = _get_colA(sheets, ssid, "1.CÁL", start, 300)
-        count = 0
-        for v in colA:
-            if v.lower() in ("modelo", "subtotal", "total") or v == "":
-                break
-            count += 1
-        return max(count, 1), start + count
-    # existing = filas entre 3 y (next_header-1)
-    existing = max(next_header - start - 0, 1)  # -0 para dejar claro que es inclusivo arriba, exclusivo abajo
-    return existing, next_header
-
-
-def _count_lower_block_1cal(sheets, ssid, header_row):
-    """
-    Bloque inferior 1.CÁL (debajo del encabezado MODELO que viene a mitad de la hoja):
-      - Empieza en header_row+1
-      - Termina en fila con "Subtotal" (en col A)
-    Devuelve existing_rows.
-    """
-    start = header_row + 1
-    subtotal_row = _find_row_containing_colA(sheets, ssid, "1.CÁL", "Subtotal", start=start, end=300)
-    if not subtotal_row:
-        # fallback: cuenta 3 filas como en plantilla base
-        return 3
-    existing = max(subtotal_row - start, 1)
-    return existing
-
-
-def _detect_a1_liq_pd_data_start(sheets, ssid):
-    """
-    Hoja a.1 LIQ PD:
-      - Encuentra "LISTA DE PRODUCTOS"
-      - La fila de títulos de columnas es la siguiente, y la fila de datos empieza 1 fila después.
-    Devuelve data_start_row (1-based).
-    """
-    hdr = _find_row_containing_colA(sheets, ssid, "a.1 LIQ PD", "LISTA DE PRODUCTOS", start=1, end=300)
-    if not hdr:
-        # fallback al valor histórico
-        return 63
-    return hdr + 2  # (hdr) título grande, (hdr+1) encabezados de columnas, datos en (hdr+2)
-
-
-def _count_until_total_a1pd(sheets, ssid, data_start):
-    """
-    Cuenta filas de la lista de productos en a.1 LIQ PD hasta encontrar "Total" en la columna D (descripción).
-    """
-    rng = f"a.1 LIQ PD!D{data_start}:D300"
-    colD = sheets.spreadsheets().values().get(
-        spreadsheetId=ssid, range=rng
-    ).execute().get("values", [])
-    count = 0
-    for row in colD:
-        v = (row[0] if row else "").strip().lower()
-        if v == "total":
-            break
-        count += 1
-    return max(count, 1)
-
-
-# ==================================================
-# ESCRITURA EN BLOQUE
-# ==================================================
 def _batch_write_values(sheets, ssid, writes):
     if writes:
         sheets.spreadsheets().values().batchUpdate(
             spreadsheetId=ssid,
             body={"valueInputOption": "USER_ENTERED", "data": writes}
         ).execute()
+
+
+# ==================================================
+# PUBLICADOR DIRECTO (puente)
+# ==================================================
+def publicar_en_liquidacion(rows, folder_id, tipo="maritimo"):
+    """Genera el payload y ejecuta este mismo script internamente."""
+    items = []
+    for i, row in enumerate(rows, 1):
+        items.append({
+            "name": f"image_{i:03d}.png",
+            "b64": row.get("b64") or None,
+            "commercial_name": row.get("nombre_comercial") or "",
+            "hs_code": row.get("partida") or "",
+            "linkCotizador": f"https://www.amazon.com/s?k={row.get('nombre_comercial','').replace(' ', '+')}",
+            "description": row.get("descripcion") or "",
+            "unit": row.get("unidad_de_medida") or "",
+            "qty_per_box": row.get("cantidad_x_caja") or "",
+            "boxes": row.get("cajas") or "",
+            "total_units": row.get("total_unidades") or "",
+            "model": row.get("modelo") or ""
+        })
+
+    payload = {
+        "folderId": folder_id,
+        "documentName": "Liquidación automática generada",
+        "items": items
+    }
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w", encoding="utf-8") as tmp:
+        json.dump(payload, tmp, ensure_ascii=False, indent=2)
+        tmp.flush()
+        subprocess.run(["python", __file__, tmp.name, tipo], check=True)
 
 
 # ==================================================
@@ -275,7 +177,7 @@ def main():
         drive = get_service("drive")
         sheets = get_service("sheets")
 
-        # Crear copia de la plantilla
+        # Copiar plantilla base
         ssid = drive.files().copy(
             fileId=TEMPLATES[tipo],
             body={"name": f"{doc_name} ({tipo})", "parents": [folder_id]},
@@ -283,60 +185,74 @@ def main():
             supportsAllDrives=True
         ).execute()["id"]
 
-        # ========== 1) CONTADORES DINÁMICOS (contador) ==========
-        # 1.CÁL (arriba)
-        existing_top, next_header_row = _count_products_block_1cal(sheets, ssid)
-        # 1.CÁL (bloque inferior)
-        existing_lower = _count_lower_block_1cal(sheets, ssid, next_header_row)
-        # a.1 LIQ PD
-        a1pd_start = _detect_a1_liq_pd_data_start(sheets, ssid)
-        existing_a1pd = _count_until_total_a1pd(sheets, ssid, a1pd_start)
+        # Cache IDs de hojas
+        sheet_ids = _sheet_ids_cache(sheets, ssid)
 
-        # ========== 2) INSERCIÓN (clonado exacto) ==========
-        # 1.CÁL superior (datos visibles)
-        _clone_exact_rows(sheets, ssid, "1.CÁL", 3, n, existing_top)
+        # === Inserciones dinámicas ===
+        requests = []
+        sid_cal = _resolve_sheet_id(sheet_ids, "1.CÁL")
+        requests += _clone_rows_requests(sid_cal, 3, 3, n)
 
-        # 1.CÁL bloque inferior (entre MODELO y Subtotal) → clonar desde la primera fila de datos del bloque
-        _clone_exact_rows(sheets, ssid, "1.CÁL", next_header_row + 1, n, existing_lower)
+        fila_inicial_subtabla = 11
+        fila_subtabla = fila_inicial_subtabla + (n - 1)
+        requests += _clone_rows_requests(sid_cal, fila_subtabla, fila_subtabla, n)
 
-        # a.1 LIQ PD (lista de productos)
-        _clone_exact_rows(sheets, ssid, "a.1 LIQ PD", a1pd_start, n, existing_a1pd)
+        sid_aliq = _resolve_sheet_id(sheet_ids, "a.LIQ")
+        sid_aliq_pd = _resolve_sheet_id(sheet_ids, "a.1 LIQ PD")
+        requests += _clone_rows_requests(sid_aliq, 62, 62, n)
+        requests += _clone_rows_requests(sid_aliq_pd, 63, 63, n)
 
-        # a.LIQ (siempre 3 iniciales en plantilla; si tu plantilla ya trae 3, esto escala a n)
-        _clone_exact_rows(sheets, ssid, "a.LIQ", 62, n, 3)
+        sid_bliqf = _resolve_sheet_id(sheet_ids, ["b.LIQ.F", "b. LIQ.F"])
+        requests += _clone_rows_requests(sid_bliqf, 109, 109, n, col_end=500)
 
-        # Hojas opcionales
-        for hoja, start in ((["3. LCL D", "3.LCL D"], 2), (["b.LIQ.F", "b. LIQ.F"], 109)):
-            try:
-                _clone_exact_rows(sheets, ssid, hoja, start, n, 3)
-            except Exception:
-                pass  # si no existe, seguir
+        sid_lcld = _resolve_sheet_id(sheet_ids, "3. LCL D")
+        requests += _clone_rows_requests(sid_lcld, 2, 2, n)
 
-        # ========== 3) ESCRITURA VISIBLE EN 1.CÁL ==========
-        start_row, end_row = 3, 3 + n - 1
+        if requests:
+            sheets.spreadsheets().batchUpdate(spreadsheetId=ssid, body={"requests": requests}).execute()
+
+        # === Subida de imágenes en paralelo con conexiones separadas ===
+        start_row = 3
+        end_row = start_row + n - 1
+
+        def build_row(idx_item):
+            """Cada hilo crea su propia sesión segura con Google Drive"""
+            from autenticacion import get_service
+            local_drive = get_service("drive")
+            i, it = idx_item
+            name = it.get("name") or f"image_{i:03d}.png"
+            b64 = it.get("b64") or it.get("_b64")
+            if b64:
+                url = _upload_b64_to_drive(b64, name, folder_id, local_drive)
+            else:
+                url = it.get("url", "")
+            com = it.get("commercial_name") or it.get("commercialName") or ""
+            hs = str(it.get("hs_code") or it.get("hsCode") or "")
+            link_cotizador = it.get("linkCotizador") or f"https://www.amazon.com/s?k={com.replace(' ', '+')}"
+            img_formula = f'=IMAGE("{url}")' if url else ""
+            return (link_cotizador, img_formula, url, "", com, "PZA", 1, 1, 1, hs)
+
+        # === Llenado de listas ===
         links_A, fotos_E, enlaces_F, descrip_G, nombre_H = [], [], [], [], []
         um_I, cxj_J, cajas_K, total_L, hs_U = [], [], [], [], []
 
-        for i, it in enumerate(items, 1):
-            name = it.get("name") or f"image_{i:03d}.png"
-            b64 = it.get("b64") or it.get("_b64")
-            url = _upload_b64_to_drive(b64, name, folder_id, drive) if b64 else it.get("url", "")
-            com = it.get("commercial_name") or it.get("commercialName") or ""
-            hs  = str(it.get("hs_code") or it.get("hsCode") or "")
-            lc  = it.get("linkCotizador") or f"https://www.amazon.com/s?k={com.replace(' ', '+')}"
-            img_formula = f'=IMAGE("{url}")' if url else ""
+        if n > 0:
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                for (link, imgf, url, desc, com, um, cxj, cajas, total, hs) in pool.map(
+                    build_row, [(i, it) for i, it in enumerate(items, 1)]
+                ):
+                    links_A.append([link])
+                    fotos_E.append([imgf])
+                    enlaces_F.append([url])
+                    descrip_G.append([desc])
+                    nombre_H.append([com])
+                    um_I.append([um])
+                    cxj_J.append([cxj])
+                    cajas_K.append([cajas])
+                    total_L.append([total])
+                    hs_U.append([hs])
 
-            links_A.append([lc])
-            fotos_E.append([img_formula])
-            enlaces_F.append([url])
-            descrip_G.append([""])
-            nombre_H.append([com])
-            um_I.append(["PZA"])
-            cxj_J.append([1])
-            cajas_K.append([1])
-            total_L.append([1])
-            hs_U.append([hs])
-
+        # === Escritura final ===
         writes = [
             {"range": f"1.CÁL!A{start_row}:A{end_row}", "values": links_A},
             {"range": f"1.CÁL!E{start_row}:E{end_row}", "values": fotos_E},
