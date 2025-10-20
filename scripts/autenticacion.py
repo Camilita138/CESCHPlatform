@@ -19,31 +19,41 @@ TOKEN_PATH = os.path.join(os.getcwd(), "scripts", "token.json")
 def authenticate() -> Credentials:
     """
     Devuelve credenciales válidas para Google APIs.
-    En Render usa GOOGLE_CREDENTIALS (JSON en variable de entorno).
+    En Render usa GOOGLE_CREDENTIALS (variable de entorno con JSON).
     En local usa credentials.json + token.json.
     """
-    # 1️⃣ Si estamos en Render (GOOGLE_CREDENTIALS existe)
     creds_env = os.getenv("GOOGLE_CREDENTIALS")
+
+    # === MODO RENDER ===
     if creds_env:
-        print("✅ Autenticando con GOOGLE_CREDENTIALS desde entorno (modo Render)...")
+        print("✅ Autenticando con GOOGLE_CREDENTIALS (modo Render)...")
         creds_dict = json.loads(creds_env)
 
-        # Si es un JSON de tipo 'installed' (OAuth2 de cliente)
-        if "installed" in creds_dict:
-            flow = InstalledAppFlow.from_client_config(creds_dict, SCOPES)
-            creds = flow.run_console()
-            return creds
-
-        # Si es un service account (ideal para Render)
+        # 🟢 Si el JSON es tipo 'service_account'
         if "type" in creds_dict and creds_dict["type"] == "service_account":
             creds = service_account.Credentials.from_service_account_info(
                 creds_dict, scopes=SCOPES
             )
             return creds
 
+        # 🔵 Si el JSON es tipo 'installed' (tu caso)
+        elif "installed" in creds_dict:
+            # Usar client_id/secret directamente para crear credenciales OAuth2 sin flujo interactivo
+            client_info = creds_dict["installed"]
+            creds = Credentials.from_authorized_user_info(
+                {
+                    "client_id": client_info["client_id"],
+                    "client_secret": client_info["client_secret"],
+                    "refresh_token": os.getenv("GOOGLE_REFRESH_TOKEN", ""),
+                    "token_uri": client_info["token_uri"],
+                },
+                scopes=SCOPES,
+            )
+            return creds
+
         raise ValueError("Formato de GOOGLE_CREDENTIALS inválido")
 
-    # 2️⃣ Si estamos en local (modo desarrollo)
+    # === MODO LOCAL ===
     creds = None
     if os.path.exists(TOKEN_PATH):
         try:
@@ -51,7 +61,6 @@ def authenticate() -> Credentials:
         except Exception:
             creds = None
 
-    # Refrescar token si expiró
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
@@ -63,7 +72,6 @@ def authenticate() -> Credentials:
                 pass
             creds = None
 
-    # Si no hay token válido, iniciar flujo de login local
     if not creds or not creds.valid:
         if not os.path.exists(CREDENTIALS_PATH):
             raise FileNotFoundError("❌ No se encontró credentials.json en local.")
@@ -74,6 +82,7 @@ def authenticate() -> Credentials:
 
     print("✅ Autenticación exitosa (modo local).")
     return creds
+
 
 
 def get_service(api: str):
