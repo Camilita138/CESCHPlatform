@@ -57,7 +57,11 @@ const tools: Tool[] = [
     icon: FileImage,
     category: "Documentos",
     status: "available",
-    features: ["Extracción automática", "Organización en Drive", "Creación de hojas"],
+    features: [
+      "Extracción automática",
+      "Organización en Drive",
+      "Creación de hojas",
+    ],
   },
   {
     id: "liquidacion-completa",
@@ -93,7 +97,9 @@ function AddCard() {
           <Plus className="h-6 w-6" />
         </div>
         <CardTitle>Agregar herramienta</CardTitle>
-        <CardDescription>Espacio reservado para futuras integraciones</CardDescription>
+        <CardDescription>
+          Espacio reservado para futuras integraciones
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex justify-center pb-6">
         <Badge variant="outline">Próximamente</Badge>
@@ -119,25 +125,44 @@ export function ToolsHub({ onToolStart }: ToolsHubProps) {
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="text-center space-y-2">
-        <h1 className="text-3xl font-bold text-balance">Centro de Herramientas Digitales</h1>
+        <h1 className="text-3xl font-bold text-balance">
+          Centro de Herramientas Digitales
+        </h1>
         <p className="text-muted-foreground text-pretty">
-          Selecciona una herramienta para automatizar tus tareas y optimizar tu flujo de trabajo
+          Selecciona una herramienta para automatizar tus tareas y optimizar tu
+          flujo de trabajo
         </p>
       </div>
 
+      {/* 🧱 GRID PRINCIPAL DE HERRAMIENTAS */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {tools.map((tool) => {
           const Icon = tool.icon;
           const isSelected = selectedTool === tool.id;
 
+          // 🚫 Herramientas bloqueadas
+          const disabledTools = ["proforma", "pdf-images"];
+          const isDisabled = disabledTools.includes(tool.id);
+
           return (
             <Card
               key={tool.id}
-              className={`cursor-pointer transition-all hover:shadow-lg ${
-                isSelected ? "ring-2 ring-accent" : ""
-              }`}
-              onClick={() => setSelectedTool(tool.id)}
+              className={`relative transition-all ${
+                isDisabled
+                  ? "opacity-50 cursor-not-allowed pointer-events-none"
+                  : "cursor-pointer hover:shadow-lg"
+              } ${isSelected ? "ring-2 ring-accent" : ""}`}
+              onClick={() => !isDisabled && setSelectedTool(tool.id)}
             >
+              {/* Overlay si está bloqueada */}
+              {isDisabled && (
+                <div className="absolute inset-0 bg-background/70 backdrop-blur-[1px] flex items-center justify-center z-10 rounded-md">
+                  <span className="text-sm font-medium text-muted-foreground">
+                    🔒 No disponible temporalmente
+                  </span>
+                </div>
+              )}
+
               <CardHeader>
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
@@ -153,7 +178,9 @@ export function ToolsHub({ onToolStart }: ToolsHubProps) {
                   </div>
                   <StatusBadge />
                 </div>
-                <CardDescription className="text-sm">{tool.description}</CardDescription>
+                <CardDescription className="text-sm">
+                  {tool.description}
+                </CardDescription>
               </CardHeader>
 
               <CardContent>
@@ -170,8 +197,11 @@ export function ToolsHub({ onToolStart }: ToolsHubProps) {
                     </ul>
                   </div>
 
-                  {isSelected && (
-                    <Button onClick={() => handleToolSelect(tool.id)} className="w-full gap-2">
+                  {isSelected && !isDisabled && (
+                    <Button
+                      onClick={() => handleToolSelect(tool.id)}
+                      className="w-full gap-2"
+                    >
                       Iniciar Herramienta
                       <ArrowRight className="h-4 w-4" />
                     </Button>
@@ -186,11 +216,14 @@ export function ToolsHub({ onToolStart }: ToolsHubProps) {
         <AddCard />
       </div>
 
+      {/* 🧩 Métricas inferiores */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
         <Card>
           <CardContent className="p-4 text-center">
             <div className="text-2xl font-bold text-accent">{tools.length}</div>
-            <div className="text-sm text-muted-foreground">Herramientas Disponibles</div>
+            <div className="text-sm text-muted-foreground">
+              Herramientas Disponibles
+            </div>
           </CardContent>
         </Card>
         <Card>
