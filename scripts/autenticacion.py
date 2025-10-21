@@ -1,3 +1,4 @@
+# /scripts/autenticacion.py
 import os
 import json
 from googleapiclient.discovery import build
@@ -19,41 +20,27 @@ TOKEN_PATH = os.path.join(os.getcwd(), "scripts", "token.json")
 def authenticate() -> Credentials:
     """
     Devuelve credenciales válidas para Google APIs.
-    En Render usa GOOGLE_CREDENTIALS (variable de entorno con JSON).
+    En Render usa GOOGLE_CREDENTIALS (Service Account).
     En local usa credentials.json + token.json.
     """
     creds_env = os.getenv("GOOGLE_CREDENTIALS")
 
-    # === MODO RENDER ===
+    # === 🟢 MODO RENDER (Service Account) ===
     if creds_env:
         print("✅ Autenticando con GOOGLE_CREDENTIALS (modo Render)...")
         creds_dict = json.loads(creds_env)
 
-        # 🟢 Si el JSON es tipo 'service_account'
+        # 🩵 FIX: Forzar uso de Service Account
         if "type" in creds_dict and creds_dict["type"] == "service_account":
             creds = service_account.Credentials.from_service_account_info(
                 creds_dict, scopes=SCOPES
             )
+            print(f"🔐 Autenticado como: {creds_dict.get('client_email')}")
             return creds
 
-        # 🔵 Si el JSON es tipo 'installed' (tu caso)
-        elif "installed" in creds_dict:
-            # Usar client_id/secret directamente para crear credenciales OAuth2 sin flujo interactivo
-            client_info = creds_dict["installed"]
-            creds = Credentials.from_authorized_user_info(
-                {
-                    "client_id": client_info["client_id"],
-                    "client_secret": client_info["client_secret"],
-                    "refresh_token": os.getenv("GOOGLE_REFRESH_TOKEN", ""),
-                    "token_uri": client_info["token_uri"],
-                },
-                scopes=SCOPES,
-            )
-            return creds
+        raise ValueError("❌ GOOGLE_CREDENTIALS no es un Service Account JSON válido.")
 
-        raise ValueError("Formato de GOOGLE_CREDENTIALS inválido")
-
-    # === MODO LOCAL ===
+    # === 🖥️ MODO LOCAL (OAuth normal) ===
     creds = None
     if os.path.exists(TOKEN_PATH):
         try:
@@ -82,7 +69,6 @@ def authenticate() -> Credentials:
 
     print("✅ Autenticación exitosa (modo local).")
     return creds
-
 
 
 def get_service(api: str):
