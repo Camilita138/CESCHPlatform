@@ -200,9 +200,9 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
             onChange={(e) => setTemplateKey(e.target.value as any)}
             className="border rounded-md px-2 py-1 text-sm"
           >
-            {/*<option value="aereo">Plantilla Aéreo</option>*/}
             <option value="maritimo">Plantilla Marítimo</option>
-            {/*<option value="contenedor">Plantilla Contenedor</option>*/}
+            <option value="aereo">Plantilla Aéreo</option>
+            <option value="contenedor">Plantilla Contenedor</option>
           </select>
 
           <Button onClick={publishToSheets} disabled={publishing || total === 0} className="gap-2">
