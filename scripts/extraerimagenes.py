@@ -1,3 +1,4 @@
+#scripts/extraerimagenes.py
 import fitz  # PyMuPDF
 import os
 from math import inf

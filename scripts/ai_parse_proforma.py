@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+AI Parser de Proformas - Versión extendida (2025-10-22)
+Lee TODO el PDF (sin límite de páginas), lo convierte a imágenes base64
+y envía todo a ChatGPT para extracción completa de ítems.
+"""
+
 import sys, json, base64
 from typing import List, Dict, Any
 import fitz  # PyMuPDF
@@ -12,13 +20,15 @@ def _emit_json(obj: Dict[str, Any]) -> None:
     _REAL_STDOUT.flush()
 
 # ==========================================================
-# CONVERSIÓN DE PDF A IMÁGENES BASE64
+# CONVERSIÓN DE PDF A IMÁGENES BASE64 (SIN LÍMITE)
 # ==========================================================
-def pdf_to_images_b64(path: str, max_pages: int = 3, zoom: float = 2.0) -> List[str]:
+def pdf_to_images_b64(path: str, max_pages: int = None, zoom: float = 2.0) -> List[str]:
     out: List[str] = []
     doc = fitz.open(path)
-    pages = min(len(doc), max_pages)
-    for i in range(pages):
+    total_pages = len(doc)
+    if max_pages is None or max_pages > total_pages:
+        max_pages = total_pages
+    for i in range(max_pages):
         page = doc.load_page(i)
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
         out.append(base64.b64encode(pix.tobytes("png")).decode("utf-8"))
@@ -45,7 +55,6 @@ def clean_partida(v) -> str:
 # MAIN PRINCIPAL
 # ==========================================================
 def main():
-    # Uso: python ai_parse_proforma.py <pdf_path> <max_pages> <OPENAI_API_KEY>
     if len(sys.argv) < 4:
         _emit_json({
             "success": False,
@@ -58,18 +67,17 @@ def main():
     api_key = sys.argv[3]
 
     try:
-        # 1) Convertir PDF a imágenes
-        images = pdf_to_images_b64(pdf_path, max_pages=max_pages, zoom=2.0)
+        # 1) Convertir TODO el PDF a imágenes base64
+        images = pdf_to_images_b64(pdf_path, max_pages=None, zoom=2.0)
+        print(f"[INFO] PDF convertido a {len(images)} imágenes base64", file=sys.stderr)
 
-        # 2) Prompt mejorado y extendido
+        # 2) Prompt principal
         system = (
             "Eres un asistente experto en interpretar PROFORMAS o INVOICES con tablas de productos. "
             "Tu misión es leer TODO el contenido tabular desde el encabezado 'MODEL' hasta el final del documento, "
             "sin detenerte cuando cambien los modelos ni cuando haya filas con celdas vacías.\n\n"
-
             "Debes combinar texto y estructura visual del PDF para extraer las filas completas. "
             "Incluye absolutamente todos los productos hasta la última fila visible, incluso si algunas no tienen precios o modelos definidos.\n\n"
-
             "Formato de salida EXACTO:\n"
             "{\n"
             '  \"rows\": [\n'
@@ -88,29 +96,16 @@ def main():
             "  ],\n"
             '  \"notas\": \"string\"\n'
             "}\n\n"
-
             "⚙️ INSTRUCCIONES CLAVE:\n"
             "- Lee toda la tabla desde el encabezado 'MODEL' o 'DESCRIPTION' hasta la última fila antes del total.\n"
-            "- No te detengas aunque veas filas sin modelo o descripción. Cada línea con números, texto o precios es una fila válida.\n"
-            "- Si varias filas pertenecen al mismo modelo (ejemplo: HDL30A), repite ese modelo en todas.\n"
-            "- Si el nombre comercial se parece al modelo, corrígelo para que sea descriptivo: "
-            "ejemplo: 'HDL30A' → 'ALTAVOZ PROFESIONAL HDL30A', 'HDL30A FLIGHT CASE' → 'FLIGHT CASE PARA HDL30A'.\n"
-            "- 'descripcion' debe contener características técnicas: potencia, materiales, conectores, dimensiones. "
-            "Si no hay descripción visible, genera una a partir del texto y la imagen.\n"
-            "- 'unidad_de_medida' proviene de columnas UNIT, PCS, CTN, PZA, U/M.\n"
-            "- 'cantidad_x_caja', 'cajas', 'total_unidades': deben provenir de columnas QTY, PCS o CTN. "
-            "Si no aparecen explícitos, infiere total_unidades = cantidad_x_caja * cajas.\n"
-            "- 'precio_unitario_usd' y 'total_usd': extrae de PRICE, UNIT PRICE o AMOUNT.\n"
-            "- 'partida' es el HS CODE si existe, o null.\n"
-            "- No ignores las filas al final de la tabla (como 'HDL30A fly bar for hanging'). Deben incluirse.\n"
-            "- Todos los nombres comerciales deben estar en MAYÚSCULAS.\n"
-            "- Devuelve SOLO JSON válido sin texto adicional ni explicaciones.\n"
+            "- No ignores las filas sin precio o modelo.\n"
+            "- Mantén todos los datos, incluso si parecen subtítulos.\n"
+            "- Devuelve SOLO JSON válido, sin texto adicional.\n"
         )
 
-
-        # 3) Construir contenido para el modelo
+        # 3) Contenido del prompt
         content: List[Dict[str, Any]] = [
-            {"type": "text", "text": "Extrae todos los ítems de esta proforma. Responde SOLO JSON válido."}
+            {"type": "text", "text": "Extrae todos los ítems de esta proforma. Devuelve SOLO JSON válido."}
         ]
         for b64 in images:
             content.append({
@@ -133,16 +128,28 @@ def main():
                     {"role": "system", "content": system},
                     {"role": "user", "content": content},
                 ],
-                "max_tokens": 1600,
+                # máximo permitido para salida larga
+                "max_tokens": 16000,
             },
-            timeout=120,
+            timeout=300,
         )
 
         r.raise_for_status()
         raw = r.json()["choices"][0]["message"]["content"] or "{}"
-        data = json.loads(raw)
 
-        # 5) Normalización final
+        # 5) Reparar JSON incompleto
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            # intentar reparar
+            fixed = raw.rsplit("}", 1)[0] + "}"
+            try:
+                data = json.loads(fixed)
+            except Exception:
+                print("[WARN] Respuesta JSON incompleta o corrupta", file=sys.stderr)
+                data = {"rows": [], "notas": "Respuesta incompleta del modelo"}
+
+        # 6) Normalizar filas
         rows = data.get("rows", []) if isinstance(data, dict) else []
         norm = []
         for rrow in rows:
@@ -150,21 +157,14 @@ def main():
             modelo = (rrow or {}).get("modelo")
             desc = (rrow or {}).get("descripcion")
 
-            # Si modelo y nombre son iguales → reescribir el nombre
             if nombre and modelo and nombre.strip().upper() == modelo.strip().upper():
                 nombre = f"PRODUCTO {modelo}"
-
-            # Si hay modelo pero no nombre → generar uno descriptivo
             if not nombre and modelo:
                 nombre = f"PRODUCTO {modelo}"
-
-            # Si hay nombre pero no modelo → intentar extraer del nombre (ej. HDL30A dentro del texto)
             if not modelo and nombre:
                 m = re.search(r"[A-Z]{2,}\d+[A-Z]*", nombre)
                 if m:
                     modelo = m.group(0)
-
-            # Si no hay descripción, crear una base
             if not desc:
                 desc = f"Artículo {nombre.title()}" if nombre else "Producto sin descripción"
 
@@ -181,7 +181,7 @@ def main():
                 "total_usd": try_float((rrow or {}).get("total_usd")),
             })
 
-        # 6) Salida final
+        # 7) Salida final
         _emit_json({"success": True, "rows": norm, "notas": data.get("notas")})
 
     except Exception as e:

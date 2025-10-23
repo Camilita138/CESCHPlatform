@@ -15,14 +15,34 @@ TEMPLATES = {
 # ==================================================
 # AUXILIARES
 # ==================================================
+def _get_or_create_folder(drive, parent_id, name):
+    """Busca una carpeta llamada `name` dentro de parent_id. Si no existe, la crea."""
+    query = f"'{parent_id}' in parents and name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    results = drive.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get("files", [])
+    if files:
+        return files[0]["id"]
+
+    # Crear nueva carpeta
+    file_metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id],
+    }
+    folder = drive.files().create(body=file_metadata, fields="id").execute()
+    return folder["id"]
+
+
 def _upload_b64_to_drive(b64: str, name: str, folder_id: str, drive):
     """Sube una imagen desde b64 a Drive y devuelve URL directa válida para =IMAGE()."""
     data = base64.b64decode(b64)
     mime = mimetypes.guess_type(name)[0] or "image/png"
+
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     tmp.write(data)
     tmp.flush()
     tmp.close()
+
     media = MediaFileUpload(tmp.name, mimetype=mime, resumable=False)
     created = drive.files().create(
         body={"name": name, "parents": [folder_id]},
@@ -30,6 +50,7 @@ def _upload_b64_to_drive(b64: str, name: str, folder_id: str, drive):
         fields="id",
         supportsAllDrives=True
     ).execute()
+
     fid = created["id"]
 
     # Permiso público para que =IMAGE() funcione
@@ -53,13 +74,11 @@ def _upload_b64_to_drive(b64: str, name: str, folder_id: str, drive):
 
 
 def _sheet_ids_cache(sheets, ssid):
-    """Devuelve un dict {titulo: sheetId} con todos los títulos (trim)."""
     meta = sheets.spreadsheets().get(spreadsheetId=ssid).execute()
     return {s["properties"]["title"].strip(): s["properties"]["sheetId"] for s in meta["sheets"]}
 
 
 def _resolve_sheet_id(sheet_ids, titles):
-    """Acepta un título o lista de títulos; devuelve el primero que exista en el archivo."""
     if isinstance(titles, str):
         titles = [titles]
     for t in titles:
@@ -70,12 +89,12 @@ def _resolve_sheet_id(sheet_ids, titles):
 
 
 # ==================================================
-# CONSTRUCCIÓN DE REQUESTS (una sola batchUpdate)
+# CONSTRUCCIÓN DE REQUESTS
 # ==================================================
 def _clone_rows_requests(sheet_id, start_row_1b, end_row_1b, n, col_end=200):
-    """Crea requests para copiar filas con formato."""
     if n <= 1:
         return []
+
     block_h = end_row_1b - start_row_1b + 1
     insert_start = end_row_1b
     insert_end = insert_start + (n - 1) * block_h
@@ -125,7 +144,7 @@ def _batch_write_values(sheets, ssid, writes):
 
 
 # ==================================================
-# PUBLICADOR DIRECTO (puente)
+# PUBLICADOR DIRECTO
 # ==================================================
 def publicar_en_liquidacion(rows, folder_id, tipo="maritimo"):
     """Genera el payload y ejecuta este mismo script internamente."""
@@ -177,6 +196,10 @@ def main():
         drive = get_service("drive")
         sheets = get_service("sheets")
 
+        # 🔹 Crear o usar carpeta FOTOS dentro de la carpeta destino
+        fotos_folder_id = _get_or_create_folder(drive, folder_id, "FOTOS")
+        print(f"[INFO] Carpeta 'FOTOS' en Drive: {fotos_folder_id}")
+
         # Copiar plantilla base
         ssid = drive.files().copy(
             fileId=TEMPLATES[tipo],
@@ -185,76 +208,78 @@ def main():
             supportsAllDrives=True
         ).execute()["id"]
 
-        # Cache IDs de hojas
         sheet_ids = _sheet_ids_cache(sheets, ssid)
 
         # === Inserciones dinámicas ===
         requests = []
         sid_cal = _resolve_sheet_id(sheet_ids, "1.CÁL")
         requests += _clone_rows_requests(sid_cal, 3, 3, n)
-
         fila_inicial_subtabla = 11
         fila_subtabla = fila_inicial_subtabla + (n - 1)
         requests += _clone_rows_requests(sid_cal, fila_subtabla, fila_subtabla, n)
-
         sid_aliq = _resolve_sheet_id(sheet_ids, "a.LIQ")
         sid_aliq_pd = _resolve_sheet_id(sheet_ids, "a.1 LIQ PD")
         requests += _clone_rows_requests(sid_aliq, 62, 62, n)
         requests += _clone_rows_requests(sid_aliq_pd, 63, 63, n)
-
         sid_bliqf = _resolve_sheet_id(sheet_ids, ["b.LIQ.F", "b. LIQ.F"])
         requests += _clone_rows_requests(sid_bliqf, 109, 109, n, col_end=500)
-
         sid_lcld = _resolve_sheet_id(sheet_ids, "3. LCL D")
         requests += _clone_rows_requests(sid_lcld, 2, 2, n)
 
         if requests:
             sheets.spreadsheets().batchUpdate(spreadsheetId=ssid, body={"requests": requests}).execute()
 
-        # === Subida de imágenes en paralelo con conexiones separadas ===
+        # === Subida de imágenes ===
         start_row = 3
         end_row = start_row + n - 1
 
         def build_row(idx_item):
-            """Cada hilo crea su propia sesión segura con Google Drive"""
             from autenticacion import get_service
             local_drive = get_service("drive")
+
             i, it = idx_item
             name = it.get("name") or f"image_{i:03d}.png"
             b64 = it.get("b64") or it.get("_b64")
-            if b64:
-                url = _upload_b64_to_drive(b64, name, folder_id, local_drive)
-            else:
-                url = it.get("url", "")
+            url = _upload_b64_to_drive(b64, name, fotos_folder_id, local_drive) if b64 else it.get("url", "")
             com = it.get("commercial_name") or it.get("commercialName") or ""
+            modelo = it.get("model") or it.get("modelo") or ""
             hs = str(it.get("hs_code") or it.get("hsCode") or "")
             link_cotizador = it.get("linkCotizador") or f"https://www.amazon.com/s?k={com.replace(' ', '+')}"
+            desc = it.get("description") or it.get("descripcion") or ""
+            um = it.get("unit") or it.get("unidad_de_medida") or "PZA"
+            cxj = it.get("qty_per_box") or it.get("cantidad_x_caja") or 1
+            cajas = it.get("boxes") or it.get("cajas") or 1
+            total = it.get("total_units") or it.get("total_unidades") or 1
+            precio_unitario = it.get("precio_unitario_usd") or ""
+            total_usd = it.get("total_usd") or ""
             img_formula = f'=IMAGE("{url}")' if url else ""
-            return (link_cotizador, img_formula, url, "", com, "PZA", 1, 1, 1, hs)
+            return (link_cotizador, img_formula, url, desc, com, modelo, um, cxj, cajas, total, hs, precio_unitario, total_usd)
 
-        # === Llenado de listas ===
-        links_A, fotos_E, enlaces_F, descrip_G, nombre_H = [], [], [], [], []
-        um_I, cxj_J, cajas_K, total_L, hs_U = [], [], [], [], []
+        links_A, fotos_E, enlaces_F, descrip_G, nombre_H, modelo_D = [], [], [], [], [], []
+        um_I, cxj_J, cajas_K, total_L, hs_U, precio_M, total_O = [], [], [], [], [], [], []
 
         if n > 0:
             with ThreadPoolExecutor(max_workers=6) as pool:
-                for (link, imgf, url, desc, com, um, cxj, cajas, total, hs) in pool.map(
-                    build_row, [(i, it) for i, it in enumerate(items, 1)]
+                for (link, imgf, url, desc, com, modelo, um, cxj, cajas, total, hs, precio_unitario, total_usd) in pool.map(
+                        build_row, [(i, it) for i, it in enumerate(items, 1)]
                 ):
                     links_A.append([link])
                     fotos_E.append([imgf])
                     enlaces_F.append([url])
                     descrip_G.append([desc])
                     nombre_H.append([com])
+                    modelo_D.append([modelo])
                     um_I.append([um])
                     cxj_J.append([cxj])
                     cajas_K.append([cajas])
                     total_L.append([total])
                     hs_U.append([hs])
+                    precio_M.append([precio_unitario])
+                    total_O.append([total_usd])
 
-        # === Escritura final ===
         writes = [
             {"range": f"1.CÁL!A{start_row}:A{end_row}", "values": links_A},
+            {"range": f"1.CÁL!D{start_row}:D{end_row}", "values": modelo_D},
             {"range": f"1.CÁL!E{start_row}:E{end_row}", "values": fotos_E},
             {"range": f"1.CÁL!F{start_row}:F{end_row}", "values": enlaces_F},
             {"range": f"1.CÁL!G{start_row}:G{end_row}", "values": descrip_G},
@@ -264,6 +289,8 @@ def main():
             {"range": f"1.CÁL!K{start_row}:K{end_row}", "values": cajas_K},
             {"range": f"1.CÁL!L{start_row}:L{end_row}", "values": total_L},
             {"range": f"1.CÁL!U{start_row}:U{end_row}", "values": hs_U},
+            {"range": f"1.CÁL!N{start_row}:N{end_row}", "values": precio_M},
+            {"range": f"1.CÁL!O{start_row}:O{end_row}", "values": total_O},
         ]
         _batch_write_values(sheets, ssid, writes)
 

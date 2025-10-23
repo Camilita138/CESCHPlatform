@@ -248,7 +248,7 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
         <Button
           variant={tab === "proforma" ? "default" : "outline"}
           onClick={() => setTab("proforma")}
-          disabled
+          
         >
           Proforma (tabla editable)
         </Button>
