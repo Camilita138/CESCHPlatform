@@ -24,3 +24,4 @@ openai>=1.55.0
 # ===== Utilidades extra =====
 tqdm>=4.66.5        # barras de progreso
 python-dotenv>=1.0.1  # lectura de variables .env si algún script lo usa
+packaging>=24.0
