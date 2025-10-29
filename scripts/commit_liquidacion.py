@@ -16,21 +16,54 @@ TEMPLATES = {
 # AUXILIARES
 # ==================================================
 def _get_or_create_folder(drive, parent_id, name):
-    """Busca una carpeta llamada `name` dentro de parent_id. Si no existe, la crea."""
+    """
+    Busca o crea una carpeta llamada `name` dentro de parent_id.
+    Compatible con Shared Drives (Team Drives).
+    """
     query = f"'{parent_id}' in parents and name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = drive.files().list(q=query, fields="files(id, name)").execute()
+
+    results = drive.files().list(
+        q=query,
+        fields="files(id, name, driveId)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
+
     files = results.get("files", [])
     if files:
         return files[0]["id"]
 
-    # Crear nueva carpeta
+    # Obtener driveId (por si parent está en Shared Drive)
+    try:
+        parent_info = drive.files().get(
+            fileId=parent_id,
+            fields="id, driveId",
+            supportsAllDrives=True
+        ).execute()
+        drive_id = parent_info.get("driveId")
+    except Exception as e:
+        print(f"⚠️ No se pudo obtener driveId del parent: {e}")
+        drive_id = None
+
+    # Crear nueva carpeta dentro del parent
     file_metadata = {
         "name": name,
         "mimeType": "application/vnd.google-apps.folder",
         "parents": [parent_id],
     }
-    folder = drive.files().create(body=file_metadata, fields="id").execute()
+
+    if drive_id:
+        file_metadata["driveId"] = drive_id
+
+    folder = drive.files().create(
+        body=file_metadata,
+        fields="id",
+        supportsAllDrives=True
+    ).execute()
+
     return folder["id"]
+
+
 
 
 def _upload_b64_to_drive(b64: str, name: str, folder_id: str, drive):
@@ -307,6 +340,6 @@ def main():
         }, ensure_ascii=False))
         sys.exit(1)
 
-
+_get_or_create_folder
 if __name__ == "__main__":
     main()
