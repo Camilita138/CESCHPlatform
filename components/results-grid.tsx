@@ -1,4 +1,3 @@
-// components/results-grid.tsx
 "use client";
 
 import React, { useMemo, useRef, useState, useEffect } from "react";
@@ -8,7 +7,19 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { ExternalLink, Download, Eye, Grid, List, Loader2, Trash2, Tag, Sheet as SheetIcon, CheckCircle2 } from "lucide-react";
+import {
+  ExternalLink,
+  Download,
+  Eye,
+  Grid,
+  List,
+  Loader2,
+  Trash2,
+  Tag,
+  Sheet as SheetIcon,
+  CheckCircle2,
+  ArrowLeft,
+} from "lucide-react";
 
 // Tipos
 export type Item = {
@@ -16,12 +27,11 @@ export type Item = {
   url: string;
   name: string;
   b64?: string;
-  // visibles en tarjeta
   hsCode: string;
   commercialName: string;
   confidence: number | null;
   reason: string;
-  // campos proforma/liquidación:
+
   proveedores?: string;
   modelo?: string;
   link_de_la_imagen?: string;
@@ -37,34 +47,25 @@ export type Item = {
 };
 
 interface ResultsGridProps {
-  /** PREP payload: { documentName, folderUrl, items: [...] } */
   data: any;
   onChangeItems?: (items: Item[]) => void;
+  onBack?: () => void;
 }
 
 const inputAlwaysVisible =
-  "h-11 bg-white border border-muted-foreground/40 shadow-sm " +
-  "focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 " +
-  "placeholder:text-muted-foreground";
+  "h-11 bg-white border border-muted-foreground/40 shadow-sm focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 placeholder:text-muted-foreground";
 
-export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
+export function ResultsGrid({ data, onChangeItems, onBack }: ResultsGridProps) {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [tab, setTab] = useState<"imagenes" | "proforma">("imagenes");
   const [publishing, setPublishing] = useState(false);
-  const [publishOk, setPublishOk] = useState<{sheetUrl: string; total: number} | null>(null);
+  const [publishOk, setPublishOk] = useState<{ sheetUrl: string; total: number } | null>(null);
   const [templateKey, setTemplateKey] = useState<"aereo" | "maritimo" | "contenedor">("aereo");
 
   const documentName: string = data?.documentName || "Liquidación";
   const folderUrl: string = data?.folderUrl || "";
 
-  // Normaliza los ITEMS devueltos por el PREP
-  // en components/results-grid.tsx
-  // ✅ Reemplaza tu bloque actual de useMemo por este
-
-  // ✅ Reemplazo completo
-  // ✅ BLOQUE REEMPLAZADO
   const initialRows: Item[] = useMemo(() => {
-    // 🔹 Usa únicamente data.items, no data.images
     const raw: any[] = Array.isArray(data?.items) ? data.items : [];
 
     return raw.map((r, idx) => {
@@ -83,7 +84,6 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
         confidence: r.confidence ?? null,
         reason: r.reason || "",
 
-        // 🔹 Campos Proforma
         nombre_comercial: (r.nombre_comercial || "").toString().toUpperCase(),
         descripcion: r.descripcion || "Sin descripción",
         modelo: r.modelo || "",
@@ -100,8 +100,8 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
     });
   }, [data?.items]);
 
-
   const [rows, setRows] = useState<Item[]>(() => initialRows);
+
   useEffect(() => setRows(initialRows), [initialRows]);
 
   const applyUpdate = (id: string, patch: Partial<Item>) => {
@@ -117,8 +117,7 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
   };
 
   const total = rows.length;
-
-  // COMMIT → Google Sheets
+  // Publicar a Sheets
   async function publishToSheets() {
     if (!folderUrl) {
       alert("Falta la URL/ID de Carpeta de Google Drive (folderUrl).");
@@ -131,17 +130,17 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
 
     setPublishing(true);
     setPublishOk(null);
+
     try {
       const items = rows.map((r) => ({
         name: r.name,
         url: r.url,
-        b64: r.b64, // opcional
-        // IA
+        b64: r.b64,
         hsCode: (r.hsCode || "").replace(/\D/g, "").slice(0, 10),
         commercialName: r.commercialName || r.nombre_comercial || "",
         confidence: r.confidence ?? 0,
         reason: r.reason || "",
-        // proforma/liquidación
+
         proveedores: r.proveedores ?? "",
         modelo: r.modelo ?? "",
         link_de_la_imagen: r.link_de_la_imagen ?? "",
@@ -153,7 +152,7 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
         total_unidades: r.total_unidades ?? null,
         precio_unitario_usd: r.precio_unitario_usd ?? null,
         total_usd: r.total_usd ?? null,
-        partida: (r.partida || r.hsCode || "").toString().replace(/\D/g, "").slice(0, 10),
+        partida: (r.partida || r.hsCode || "").replace(/\D/g, "").slice(0, 10),
       }));
 
       const resp = await fetch("/api/liquidacion", {
@@ -164,7 +163,7 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
           documentName,
           folderUrl,
           items,
-          templateKey, // aéreo / marítimo / contenedor
+          templateKey,
         }),
       });
 
@@ -184,7 +183,7 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      {/* Header */}
+      {/* HEADER + VOLVER */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Revisión / edición antes de crear la hoja</h1>
@@ -194,7 +193,13 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Selector de plantilla */}
+          {onBack && (
+            <Button variant="outline" className="gap-2" onClick={onBack}>
+              <ArrowLeft className="h-4 w-4" />
+              Volver
+            </Button>
+          )}
+
           <select
             value={templateKey}
             onChange={(e) => setTemplateKey(e.target.value as any)}
@@ -205,7 +210,11 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
             <option value="contenedor">Plantilla Contenedor</option>
           </select>
 
-          <Button onClick={publishToSheets} disabled={publishing || total === 0} className="gap-2">
+          <Button
+            onClick={publishToSheets}
+            disabled={publishing || total === 0}
+            className="gap-2"
+          >
             {publishing ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" /> Publicando…
@@ -221,76 +230,81 @@ export function ResultsGrid({ data, onChangeItems }: ResultsGridProps) {
       </div>
 
       {/* Aviso de éxito */}
-      {publishOk ? (
+      {publishOk && (
         <Card className="border-green-600/30">
-          <CardContent className="p-4 flex items-center justify-between gap-4">
+          <CardContent className="p-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <CheckCircle2 className="h-6 w-6 text-green-600" />
               <div>
                 <p className="font-medium">¡Publicado! {publishOk.total} filas creadas.</p>
-                <p className="text-sm text-muted-foreground">Tu hoja está lista para revisar y compartir.</p>
+                <p className="text-sm text-muted-foreground">Tu hoja está lista para revisar.</p>
               </div>
             </div>
+
             <Button asChild variant="outline" className="gap-2">
-              <a href={publishOk.sheetUrl} target="_blank" rel="noopener noreferrer">
+              <a href={publishOk.sheetUrl} target="_blank">
                 Abrir Sheet <ExternalLink className="h-4 w-4" />
               </a>
             </Button>
           </CardContent>
         </Card>
-      ) : null}
+      )}
 
       {/* Tabs */}
       <div className="flex items-center gap-2">
-        <Button variant={tab === "imagenes" ? "default" : "outline"} onClick={() => setTab("imagenes")}>
+        <Button
+          variant={tab === "imagenes" ? "default" : "outline"}
+          onClick={() => setTab("imagenes")}
+        >
           Imágenes
         </Button>
+
         <Button
           variant={tab === "proforma" ? "default" : "outline"}
           onClick={() => setTab("proforma")}
-          
         >
           Proforma (tabla editable)
         </Button>
-
 
         <div className="ml-auto flex items-center gap-2">
           <Button
             variant={viewMode === "grid" ? "default" : "outline"}
             size="icon"
             onClick={() => setViewMode("grid")}
-            aria-label="Ver como grilla"
           >
             <Grid className="h-4 w-4" />
           </Button>
+
           <Button
             variant={viewMode === "list" ? "default" : "outline"}
             size="icon"
             onClick={() => setViewMode("list")}
-            aria-label="Ver como lista"
           >
             <List className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
-      {/* Contenido de las tabs */}
       {tab === "imagenes" ? (
         <ImagenesTab
           rows={rows}
-          onApply={(id, patch) => applyUpdate(id, patch)}
-          onDelete={(id) => handleDelete(id)}
+          onApply={(id: string, patch: Partial<Item>) => applyUpdate(id, patch)}
+          onDelete={(id: string) => handleDelete(id)}
           viewMode={viewMode}
           publishing={publishing}
         />
       ) : (
-        <ProformaTab rows={rows} onApply={(id, patch) => applyUpdate(id, patch)} />
+        <ProformaTab
+          rows={rows}
+          onApply={(id: string, patch: Partial<Item>) => applyUpdate(id, patch)}
+        />
       )}
     </div>
   );
 }
 
-/* =================== Tab: Imágenes =================== */
+/* ================== TAB IMAGENES ================== */
+
 function ImagenesTab({
   rows,
   onApply,
@@ -310,6 +324,7 @@ function ImagenesTab({
         <CardTitle>Imágenes / items detectados</CardTitle>
         <CardDescription>Edita el nombre comercial para mejorar la partida.</CardDescription>
       </CardHeader>
+
       <CardContent>
         {publishing && (
           <div className="fixed inset-0 z-50 bg-black/20 backdrop-blur-sm flex items-center justify-center">
@@ -328,7 +343,7 @@ function ImagenesTab({
               <ImageCard
                 key={item.id}
                 item={item}
-                onApply={(p) => onApply(item.id, p)}
+                onApply={(patch) => onApply(item.id, patch)}
                 onDelete={() => onDelete(item.id)}
               />
             ))}
@@ -339,7 +354,7 @@ function ImagenesTab({
               <ImageRow
                 key={item.id}
                 item={item}
-                onApply={(p) => onApply(item.id, p)}
+                onApply={(patch) => onApply(item.id, patch)}
                 onDelete={() => onDelete(item.id)}
               />
             ))}
@@ -350,7 +365,8 @@ function ImagenesTab({
   );
 }
 
-/* =================== Tab: Proforma (tabla) =================== */
+/* ================= TAB PROFORMA ================= */
+
 function ProformaTab({
   rows,
   onApply,
@@ -378,36 +394,41 @@ function ProformaTab({
     <Card>
       <CardHeader>
         <CardTitle>Proforma (datos editables)</CardTitle>
-        <CardDescription>Corrige antes de publicar. Los nombres de columnas coinciden con tu liquidación.</CardDescription>
+        <CardDescription>Corrige antes de publicar.</CardDescription>
       </CardHeader>
+
       <CardContent>
         <div className="rounded-lg border overflow-hidden">
           <div className="max-h-[60vh] overflow-auto">
             <table className="w-full text-sm">
-              <thead className="bg-neutral-100 text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100 sticky top-0 z-10">
-                <tr className="[&>th]:font-medium [&>th]:whitespace-nowrap">
+              <thead className="bg-neutral-100 text-neutral-900 sticky top-0 z-10">
+                <tr>
                   {headers.map((h) => (
-                    <th key={h} className="px-3 py-2 text-left border-b border-neutral-200 dark:border-neutral-800">
+                    <th key={h} className="px-3 py-2 text-left border-b">
                       {h}
                     </th>
                   ))}
                 </tr>
               </thead>
+
               <tbody>
                 {rows.map((r, i) => (
-                  <tr key={r.id} className="border-b border-neutral-200 dark:border-neutral-800">
+                  <tr key={r.id} className="border-b">
                     <td className="px-3 py-2">{i + 1}</td>
 
-                    {/* NOMBRE COMERCIAL */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border"
                         value={r.nombre_comercial ?? r.commercialName ?? ""}
-                        onChange={(e) => onApply(r.id, { nombre_comercial: e.target.value, commercialName: e.target.value })}
+                        onChange={(e) =>
+                          onApply(r.id, {
+                            nombre_comercial: e.target.value,
+                            commercialName: e.target.value,
+                          })
+                        }
                       />
                     </td>
 
-                    {/* DESCRIPCION */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border"
@@ -416,7 +437,6 @@ function ProformaTab({
                       />
                     </td>
 
-                    {/* MODELO */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border"
@@ -425,7 +445,6 @@ function ProformaTab({
                       />
                     </td>
 
-                    {/* UNIDAD DE MEDIDA */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border"
@@ -434,83 +453,97 @@ function ProformaTab({
                       />
                     </td>
 
-                    {/* CANT x CAJA */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border text-right"
                         inputMode="decimal"
                         value={r.cantidad_x_caja ?? ""}
-                        onChange={(e) => onApply(r.id, { cantidad_x_caja: e.target.value === "" ? null : Number(e.target.value) })}
+                        onChange={(e) =>
+                          onApply(r.id, {
+                            cantidad_x_caja: Number(e.target.value) || null,
+                          })
+                        }
                       />
                     </td>
 
-                    {/* CAJAS */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border text-right"
                         inputMode="decimal"
                         value={r.cajas ?? ""}
-                        onChange={(e) => onApply(r.id, { cajas: e.target.value === "" ? null : Number(e.target.value) })}
+                        onChange={(e) =>
+                          onApply(r.id, { cajas: Number(e.target.value) || null })
+                        }
                       />
                     </td>
 
-                    {/* TOTAL UNIDADES */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border text-right"
                         inputMode="decimal"
                         value={r.total_unidades ?? ""}
-                        onChange={(e) => onApply(r.id, { total_unidades: e.target.value === "" ? null : Number(e.target.value) })}
+                        onChange={(e) =>
+                          onApply(r.id, {
+                            total_unidades: Number(e.target.value) || null,
+                          })
+                        }
                       />
                     </td>
 
-                    {/* PARTIDA */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border text-right"
-                        value={r.partida ?? r.hsCode ?? ""}
-                        onChange={(e) => {
-                          const clean = e.target.value.replace(/\D/g, "").slice(0, 10);
-                          onApply(r.id, { partida: clean, hsCode: clean });
-                        }}
+                        value={r.partida ?? ""}
+                        onChange={(e) =>
+                          onApply(r.id, {
+                            partida: e.target.value.replace(/\D/g, "").slice(0, 10),
+                            hsCode: e.target.value.replace(/\D/g, "").slice(0, 10),
+                          })
+                        }
                       />
                     </td>
 
-                    {/* PRECIO UNITARIO USD */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border text-right"
                         inputMode="decimal"
                         value={r.precio_unitario_usd ?? ""}
-                        onChange={(e) => onApply(r.id, { precio_unitario_usd: e.target.value === "" ? null : Number(e.target.value) })}
+                        onChange={(e) =>
+                          onApply(r.id, {
+                            precio_unitario_usd: Number(e.target.value) || null,
+                          })
+                        }
                       />
                     </td>
 
-                    {/* TOTAL USD */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border text-right"
                         inputMode="decimal"
                         value={r.total_usd ?? ""}
-                        onChange={(e) => onApply(r.id, { total_usd: e.target.value === "" ? null : Number(e.target.value) })}
+                        onChange={(e) =>
+                          onApply(r.id, { total_usd: Number(e.target.value) || null })
+                        }
                       />
                     </td>
 
-                    {/* LINK IMAGEN */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border"
                         value={r.link_de_la_imagen ?? ""}
-                        onChange={(e) => onApply(r.id, { link_de_la_imagen: e.target.value })}
+                        onChange={(e) =>
+                          onApply(r.id, { link_de_la_imagen: e.target.value })
+                        }
                       />
                     </td>
 
-                    {/* PROVEEDORES */}
                     <td className="px-2 py-1.5">
                       <input
                         className="w-full rounded-md px-2 py-1.5 border"
                         value={r.proveedores ?? ""}
-                        onChange={(e) => onApply(r.id, { proveedores: e.target.value })}
+                        onChange={(e) =>
+                          onApply(r.id, { proveedores: e.target.value })
+                        }
                       />
                     </td>
                   </tr>
@@ -524,14 +557,19 @@ function ProformaTab({
   );
 }
 
-/* ================= Tarjeta y Fila (misma lógica) ================= */
+/* ================= COMPONENTE IMAGECARD ================= */
+
 function ImageCard({
-  item, onApply, onDelete,
-}: { item: Item; onApply: (patch: Partial<Item>) => void; onDelete: () => void; }) {
+  item,
+  onApply,
+  onDelete,
+}: {
+  item: Item;
+  onApply: (patch: Partial<Item>) => void;
+  onDelete: () => void;
+}) {
   const [name, setName] = useState(item.commercialName || "");
   const [hs, setHs] = useState(item.hsCode || "");
-  const [conf] = useState<number | null>(item.confidence ?? null);
-  const [reason] = useState(item.reason || "");
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<any>(null);
   const lastSentRef = useRef<string>(item.commercialName || "");
@@ -544,26 +582,35 @@ function ImageCard({
 
   const doReclass = async (forcedName?: string) => {
     const nameToUse = (forcedName ?? name ?? "").trim();
-    if (!nameToUse && !item.url) return;
+    if (!nameToUse) return;
+
     if (nameToUse === lastSentRef.current && !!hs) return;
 
     setLoading(true);
+
     try {
       const res = await fetch("/api/reclassify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageUrl: item.url, commercialName: nameToUse || undefined }),
+        body: JSON.stringify({ imageUrl: item.url, commercialName: nameToUse }),
       });
+
       if (res.ok) {
         const payload = await res.json();
         const nextHs = (payload.hsCode || "").replace(/\D/g, "").slice(0, 6);
         const nextName = payload.commercialName || nameToUse;
-        onApply({ hsCode: nextHs, commercialName: nextName, nombre_comercial: nextName, reason: payload.reason || "" });
+
+        onApply({
+          hsCode: nextHs,
+          commercialName: nextName,
+          nombre_comercial: nextName,
+          reason: payload.reason || "",
+        });
+
         lastSentRef.current = nameToUse;
         setHs(nextHs);
-        setLoading(false);
       }
-    } catch {
+    } finally {
       setLoading(false);
     }
   };
@@ -571,22 +618,18 @@ function ImageCard({
   const onChangeName = (v: string) => {
     setName(v);
     if (timerRef.current) clearTimeout(timerRef.current);
+
     timerRef.current = setTimeout(() => {
       const cleaned = v.trim();
       if (cleaned.length >= 3) doReclass(cleaned);
     }, 900);
   };
 
-  const onBlur = () => {
-    const cleaned = name.trim();
-    if (cleaned.length > 0) doReclass(cleaned);
-  };
-
   const onEnter: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    const cleaned = name.trim();
-    if (cleaned.length > 0) doReclass(cleaned);
+    if (e.key === "Enter") {
+      const cleaned = name.trim();
+      if (cleaned.length > 0) doReclass(cleaned);
+    }
   };
 
   return (
@@ -595,30 +638,50 @@ function ImageCard({
         <img
           src={item.url}
           alt={item.name}
-          loading="lazy"
           className="w-full h-full object-contain bg-white"
-          onError={(e) => {
-            (e.currentTarget as HTMLImageElement).src = "/placeholder.svg";
-            (e.currentTarget as HTMLImageElement).style.background = "#f8f9fa";
-          }}
         />
+
         <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+          {/* Ver imagen */}
           <Dialog>
             <DialogTrigger asChild>
-              <Button size="sm" variant="secondary"> <Eye className="h-4 w-4" /> </Button>
+              <Button size="sm" variant="secondary">
+                <Eye className="h-4 w-4" />
+              </Button>
             </DialogTrigger>
+
             <DialogContent className="max-w-3xl">
-              <DialogHeader><DialogTitle>{item.name}</DialogTitle></DialogHeader>
+              <DialogHeader>
+                <DialogTitle>{item.name}</DialogTitle>
+              </DialogHeader>
+
               <div className="flex justify-center">
-                <img src={item.url} alt={item.name} className="max-w-full max-h-[70vh] object-contain" />
+                <img
+                  src={item.url}
+                  alt={item.name}
+                  className="max-w-full max-h-[70vh] object-contain"
+                />
               </div>
-              {reason ? <p className="text-sm text-muted-foreground mt-2">Motivo: {reason}</p> : null}
+
+              {item.reason && (
+                <p className="text-sm text-muted-foreground mt-2">
+                  Motivo: {item.reason}
+                </p>
+              )}
             </DialogContent>
           </Dialog>
+
+          {/* Descargar */}
           <Button size="sm" variant="secondary" asChild>
-            <a href={item.url} download={item.name}><Download className="h-4 w-4" /></a>
+            <a href={item.url} download={item.name}>
+              <Download className="h-4 w-4" />
+            </a>
           </Button>
-          <Button size="sm" variant="destructive" onClick={onDelete}><Trash2 className="h-4 w-4" /></Button>
+
+          {/* Eliminar */}
+          <Button size="sm" variant="destructive" onClick={onDelete}>
+            <Trash2 className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
@@ -628,32 +691,58 @@ function ImageCard({
         <Label className="text-xs text-muted-foreground flex items-center gap-1">
           <Tag className="h-3 w-3" /> Nombre comercial
         </Label>
+
         <Input
           value={name}
           onChange={(e) => onChangeName(e.target.value)}
           onKeyDown={onEnter}
-          onBlur={onBlur}
-          placeholder="Escribe el nombre comercial"
+          onBlur={() => {
+            const cleaned = name.trim();
+            if (cleaned.length > 0) doReclass(cleaned);
+          }}
           className={inputAlwaysVisible}
         />
+
         <div className="flex items-center gap-2 pt-1">
-          <Button size="sm" variant="secondary" onClick={() => doReclass()} disabled={loading} className="gap-2">
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Reclasificar</>}
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => doReclass()}
+            disabled={loading}
+            className="gap-2"
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <>Reclasificar</>
+            )}
           </Button>
         </div>
       </div>
 
       <div className="mt-2 flex flex-wrap gap-1">
-        {item.hsCode ? <Badge variant="outline">HS: {item.hsCode}</Badge> : null}
-        {typeof item.confidence === "number" ? <Badge variant="outline">Confianza: {Math.round((item.confidence ?? 0) * 100)}%</Badge> : null}
+        {item.hsCode && <Badge variant="outline">HS: {item.hsCode}</Badge>}
+        {typeof item.confidence === "number" && (
+          <Badge variant="outline">
+            Confianza: {Math.round((item.confidence ?? 0) * 100)}%
+          </Badge>
+        )}
       </div>
     </div>
   );
 }
 
+/* ================= COMPONENTE IMAGEROW ================= */
+
 function ImageRow({
-  item, onApply, onDelete,
-}: { item: Item; onApply: (patch: Partial<Item>) => void; onDelete: () => void; }) {
+  item,
+  onApply,
+  onDelete,
+}: {
+  item: Item;
+  onApply: (patch: Partial<Item>) => void;
+  onDelete: () => void;
+}) {
   const [name, setName] = useState(item.commercialName || "");
   const [loading, setLoading] = useState(false);
   const timerRef = useRef<any>(null);
@@ -667,18 +756,28 @@ function ImageRow({
   const doReclass = async (forcedName?: string) => {
     const nameToUse = (forcedName ?? name ?? "").trim();
     if (!nameToUse) return;
+
     setLoading(true);
+
     try {
       const res = await fetch("/api/reclassify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageUrl: item.url, commercialName: nameToUse }),
       });
+
       if (res.ok) {
         const payload = await res.json();
         const nextHs = (payload.hsCode || "").replace(/\D/g, "").slice(0, 6);
         const nextName = payload.commercialName || nameToUse;
-        onApply({ hsCode: nextHs, commercialName: nextName, nombre_comercial: nextName, reason: payload.reason || "" });
+
+        onApply({
+          hsCode: nextHs,
+          commercialName: nextName,
+          nombre_comercial: nextName,
+          reason: payload.reason || "",
+        });
+
         lastSentRef.current = nameToUse;
       }
     } finally {
@@ -689,73 +788,117 @@ function ImageRow({
   const onChangeName = (v: string) => {
     setName(v);
     if (timerRef.current) clearTimeout(timerRef.current);
+
     timerRef.current = setTimeout(() => {
       const cleaned = v.trim();
       if (cleaned.length >= 3) doReclass(cleaned);
     }, 900);
   };
 
-  const onBlur = () => {
-    const cleaned = name.trim();
-    if (cleaned.length > 0) doReclass(cleaned);
-  };
-
   const onEnter: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    const cleaned = name.trim();
-    if (cleaned.length > 0) doReclass(cleaned);
+    if (e.key === "Enter") {
+      const cleaned = name.trim();
+      if (cleaned.length > 0) doReclass(cleaned);
+    }
   };
 
   return (
     <div className="flex items-start gap-4 p-3 rounded-lg border bg-white">
-      <div className="relative w-20 h-20 bg-muted rounded overflow-hidden flex-shrink-0">
-        <img src={item.url} alt={item.name} className="w-full h-full object-contain bg-white" />
+      <div className="relative w-20 h-20 bg-muted rounded overflow-hidden">
+        <img
+          src={item.url}
+          alt={item.name}
+          className="w-full h-full object-contain bg-white"
+        />
+
         <div className="absolute inset-0 bg-black/45 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
           <Dialog>
             <DialogTrigger asChild>
-              <Button size="icon" variant="secondary"><Eye className="h-4 w-4" /></Button>
+              <Button size="icon" variant="secondary">
+                <Eye className="h-4 w-4" />
+              </Button>
             </DialogTrigger>
+
             <DialogContent className="max-w-3xl">
-              <DialogHeader><DialogTitle>{item.name}</DialogTitle></DialogHeader>
+              <DialogHeader>
+                <DialogTitle>{item.name}</DialogTitle>
+              </DialogHeader>
+
               <div className="flex justify-center">
-                <img src={item.url} alt={item.name} className="max-w-full max-h-[70vh] object-contain" />
+                <img
+                  src={item.url}
+                  alt={item.name}
+                  className="max-w-full max-h-[70vh] object-contain"
+                />
               </div>
-              {item.reason ? <p className="text-sm text-muted-foreground mt-2">Motivo: {item.reason}</p> : null}
+
+              {item.reason && (
+                <p className="text-sm text-muted-foreground mt-2">
+                  Motivo: {item.reason}
+                </p>
+              )}
             </DialogContent>
           </Dialog>
+
           <Button size="icon" variant="secondary" asChild>
-            <a href={item.url} download={item.name}><Download className="h-4 w-4" /></a>
+            <a href={item.url} download={item.name}>
+              <Download className="h-4 w-4" />
+            </a>
           </Button>
-          <Button size="icon" variant="destructive" onClick={onDelete}><Trash2 className="h-4 w-4" /></Button>
+
+          <Button size="icon" variant="destructive" onClick={onDelete}>
+            <Trash2 className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
       <div className="flex-1 min-w-0">
         <p className="font-medium truncate">{item.name}</p>
+
         <div className="flex flex-wrap gap-1 my-1">
-          {item.hsCode ? <Badge variant="outline">HS: {item.hsCode}</Badge> : null}
-          {typeof item.confidence === "number" ? <Badge variant="outline">Confianza: {Math.round((item.confidence ?? 0) * 100)}%</Badge> : null}
+          {item.hsCode && <Badge variant="outline">HS: {item.hsCode}</Badge>}
+          {typeof item.confidence === "number" && (
+            <Badge variant="outline">
+              Confianza: {Math.round((item.confidence ?? 0) * 100)}%
+            </Badge>
+          )}
         </div>
 
         <div className="flex items-end gap-2">
           <div className="flex-1">
-            <Label className="text-xs text-muted-foreground flex items-center gap-1"><Tag className="h-3 w-3" /> Nombre comercial</Label>
+            <Label className="text-xs text-muted-foreground flex items-center gap-1">
+              <Tag className="h-3 w-3" /> Nombre comercial
+            </Label>
+
             <Input
               value={name}
               onChange={(e) => onChangeName(e.target.value)}
               onKeyDown={onEnter}
-              onBlur={onBlur}
-              placeholder="Escribe el nombre comercial"
+              onBlur={() => {
+                const cleaned = name.trim();
+                if (cleaned.length > 0) doReclass(cleaned);
+              }}
               className={inputAlwaysVisible}
             />
           </div>
+
           <Button size="sm" variant="secondary" onClick={() => doReclass()} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Reclasificar</>}
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <>Reclasificar</>
+            )}
           </Button>
         </div>
-        {item.reason ? <p className="text-sm text-muted-foreground mt-1">Motivo: {item.reason}</p> : null}
+
+        {item.reason && (
+          <p className="text-sm text-muted-foreground mt-1">
+            Motivo: {item.reason}
+          </p>
+        )}
       </div>
     </div>
   );
 }
+
+export default ResultsGrid;

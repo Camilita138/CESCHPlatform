@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, UploadCloud } from "lucide-react";
+import { Loader2, UploadCloud, ArrowLeft } from "lucide-react";
 
 type Row = {
   item_no?: string | number | null;
@@ -33,13 +33,17 @@ type ParseResponse = {
 
 export default function ProformaReview({
   onComplete,
-  folderUrl = "",                 // 👈 pásalo desde tu layout/página (o ponlo fijo)
-  docName = "Liquidación",        // 👈 idem
+  folderUrl = "",
+  docName = "Liquidación",
+  onBack,   // 👈 añadida aquí
 }: {
   onComplete: (data: any) => void;
   folderUrl?: string;
   docName?: string;
+  onBack?: () => void;   // 👈 añadida aquí
 }) {
+
+
   const [fileName, setFileName] = useState<string>("");
   const [fileObj, setFileObj] = useState<File | null>(null);     // 👈 guardamos el File
   const [data, setData] = useState<ParseResponse | null>(null);
@@ -126,12 +130,26 @@ export default function ProformaReview({
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-3xl font-bold">Lector de Proformas</h1>
-        <p className="text-muted-foreground">
-          Sube una proforma (PDF / Imagen / Excel). La convertiremos en una tabla editable. Aquí solo revisas;
-          la hoja de Google se generará en el paso de liquidación.
-        </p>
+      <div className="flex items-center justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-3xl font-bold">Lector de Proformas</h1>
+          <p className="text-muted-foreground">
+            Sube una proforma (PDF / Imagen / Excel). La convertiremos en una tabla editable. Aquí solo revisas;
+            la hoja de Google se generará en el paso de liquidación.
+          </p>
+        </div>
+
+        {onBack && (
+          <Button
+            type="button"
+            variant="outline"
+            className="shrink-0 gap-2"
+            onClick={onBack}
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Volver
+          </Button>
+        )}
       </div>
 
       <Card>

@@ -35,33 +35,70 @@ export function Dashboard() {
   }, []);
 
   const renderMainContent = () => {
-    switch (activeView) {
-      case "herramientas":
-        return <ToolsHub onToolStart={handleToolStart} />;
+  switch (activeView) {
+    case "herramientas":
+      return <ToolsHub onToolStart={handleToolStart} />;
 
-      case "procesando":
-        // 👇 para Proforma mostramos el uploader + tabla (NO barra de pasos)
-        if (processingData?.toolId === "proforma") {
-          return <ProformaReview onComplete={handleProcessingComplete} />;
-        }
-        if (processingData?.toolId === "liquidacion-completa") {
-          return <LiquidacionCompleta onComplete={handleProcessingComplete} />;
-        }
-        return <ProcessingStatus data={processingData} onComplete={handleProcessingComplete} />;
+    case "procesando":
+      // Para Proforma mostramos el uploader + tabla (sin barra mock)
+      if (processingData?.toolId === "proforma") {
+        return (
+          <ProformaReview
+            onComplete={handleProcessingComplete}
+            // 👇 botón "Volver" → Centro de Herramientas
+            onBack={() => {
+              setProcessingData(null);
+              setResults(null);
+              setActiveView("herramientas");
+            }}
+          />
+        );
+      }
 
-      case "resultados":
-        return <ResultsGrid data={results} />;
+      if (processingData?.toolId === "liquidacion-completa") {
+        return (
+          <LiquidacionCompleta
+            onComplete={handleProcessingComplete}
+            onBack={() => {
+              setProcessingData(null);
+              setResults(null);
+              setActiveView("herramientas");
+            }}
+          />
+        );
+      }
 
-      case "historial":
-        return <HistoryPanel />;
+      return (
+        <ProcessingStatus
+          data={processingData}
+          onComplete={handleProcessingComplete}
+        />
+      );
 
-      case "configuracion":
-        return <SettingsPanel />;
+    case "resultados":
+      return (
+        <ResultsGrid
+          data={results}
+          // 👇 Back desde Resultados al Centro de Herramientas
+          onBack={() => {
+            setResults(null);
+            setProcessingData(null);
+            setActiveView("herramientas");
+          }}
+        />
+      );
 
-      default:
-        return <ToolsHub onToolStart={handleToolStart} />;
-    }
-  };
+    case "historial":
+      return <HistoryPanel />;
+
+    case "configuracion":
+      return <SettingsPanel />;
+
+    default:
+      return <ToolsHub onToolStart={handleToolStart} />;
+  }
+};
+
 
   return (
     <div className="flex h-screen bg-background">

@@ -11,11 +11,13 @@ import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Upload, FileText, AlertCircle, CheckCircle, Clock, FileImage, Brain, Sheet, ExternalLink } from "lucide-react"
+import { Upload, FileText, AlertCircle, CheckCircle, Clock, FileImage, Brain, Sheet, ExternalLink, ArrowLeft } from "lucide-react";
 
 interface LiquidacionCompletaProps {
-  onComplete?: (results: any) => void
+  onComplete?: (results: any) => void;
+  onBack?: () => void;
 }
+
 
 interface ProcessingStep {
   id: string
@@ -33,7 +35,7 @@ interface ClassificationResult {
   reason: string
 }
 
-export function LiquidacionCompleta({ onComplete }: LiquidacionCompletaProps) {
+export function LiquidacionCompleta({ onComplete, onBack }: LiquidacionCompletaProps) {
   const [file, setFile] = useState<File | null>(null)
   const [documentName, setDocumentName] = useState("")
   const [folderUrl, setFolderUrl] = useState("")
@@ -151,10 +153,27 @@ export function LiquidacionCompleta({ onComplete }: LiquidacionCompletaProps) {
   if (results) {
     return (
       <div className="max-w-6xl mx-auto space-y-6">
-        <div className="text-center space-y-2">
-          <h1 className="text-3xl font-bold text-balance">Liquidación Completa - Resultados</h1>
-          <p className="text-muted-foreground">Procesamiento completado para "{documentName}"</p>
+        <div className="flex items-center justify-between gap-4">
+          <div className="space-y-2">
+            <h1 className="text-3xl font-bold text-balance">Liquidación Completa</h1>
+            <p className="text-muted-foreground text-pretty">
+              Extrae imágenes de PDF y las clasifica arancelariamente usando inteligencia artificial
+            </p>
+          </div>
+
+          {onBack && (
+            <Button
+              type="button"
+              variant="outline"
+              className="shrink-0 gap-2"
+              onClick={onBack}
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Volver
+            </Button>
+          )}
         </div>
+
 
         {/* Resumen */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

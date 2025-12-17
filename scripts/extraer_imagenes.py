@@ -1,4 +1,4 @@
-import fitz  # PyMuPDF
+import fitz  # PyMuPDF4
 import os
 from math import inf
 
